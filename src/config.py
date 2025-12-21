@@ -6,6 +6,13 @@ Built with love by Moon Dev 🚀
 # 🔄 Exchange Selection
 EXCHANGE = 'solana'  # Options: 'solana', 'hyperliquid'
 
+# 🔒 Moon Dev API Settings (Security)
+# The Moon Dev API uses unencrypted HTTP - disable for better security
+# Core trading (Jupiter, Solana, HyperLiquid) works without it
+MOONDEV_API_ENABLED = False  # Set to True to enable Moon Dev API features
+                             # Affects: sniper_agent, whale_agent, funding_agent,
+                             # liquidation_agent, copybot features
+
 # 💰 Trading Configuration
 USDC_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  # Never trade or close
 SOL_ADDRESS = "So11111111111111111111111111111111111111111"   # Never trade or close

@@ -19,6 +19,15 @@ src_path = str(Path(__file__).parent.parent)
 if src_path not in sys.path:
     sys.path.append(src_path)
 
+# Import Moon Dev API toggle
+try:
+    from src.config import MOONDEV_API_ENABLED
+except ImportError:
+    try:
+        from config import MOONDEV_API_ENABLED
+    except ImportError:
+        MOONDEV_API_ENABLED = False
+
 import time
 import random
 import requests
@@ -330,6 +339,14 @@ class TokenScanner:
 
 def main():
     """Main entry point"""
+    # Check if Moon Dev API is enabled
+    if not MOONDEV_API_ENABLED:
+        print("🚫 Moon Dev API is DISABLED - Sniper Agent requires Moon Dev API")
+        print("   This agent fetches new token launches from api.moondev.com")
+        print("   Enable with MOONDEV_API_ENABLED=True in src/config.py")
+        print("   ⚠️  Note: Moon Dev API uses unencrypted HTTP")
+        return
+
     scanner = TokenScanner()
     scanner.show_past_tokens()
     scanner.monitor_new_launches()

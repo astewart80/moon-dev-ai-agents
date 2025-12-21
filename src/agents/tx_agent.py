@@ -29,6 +29,15 @@ if src_path not in sys.path:
 # Load environment variables for API key
 load_dotenv()
 
+# Import Moon Dev API toggle
+try:
+    from src.config import MOONDEV_API_ENABLED
+except ImportError:
+    try:
+        from config import MOONDEV_API_ENABLED
+    except ImportError:
+        MOONDEV_API_ENABLED = False
+
 # Suppress ALL logs except critical
 logging.getLogger().setLevel(logging.CRITICAL)
 
@@ -266,6 +275,14 @@ class TxScanner:
 
 def main():
     """Main entry point"""
+    # Check if Moon Dev API is enabled
+    if not MOONDEV_API_ENABLED:
+        print("🚫 Moon Dev API is DISABLED - TX Agent requires Moon Dev API")
+        print("   This agent fetches transaction data from api.moondev.com")
+        print("   Enable with MOONDEV_API_ENABLED=True in src/config.py")
+        print("   ⚠️  Note: Moon Dev API uses unencrypted HTTP")
+        return
+
     scanner = TxScanner()
     scanner.show_past_transactions()
     scanner.monitor_transactions()

@@ -96,9 +96,24 @@ load_dotenv()
 # Get the project root directory
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
+# Import the API toggle setting
+try:
+    from src.config import MOONDEV_API_ENABLED
+except ImportError:
+    try:
+        from config import MOONDEV_API_ENABLED
+    except ImportError:
+        MOONDEV_API_ENABLED = False  # Default to disabled if config not found
+
 class MoonDevAPI:
     def __init__(self, api_key=None, base_url="http://api.moondev.com:8000"):
         """Initialize the API handler"""
+        # Check if Moon Dev API is enabled in config
+        self.enabled = MOONDEV_API_ENABLED
+        if not self.enabled:
+            print("⚠️  Moon Dev API is DISABLED (MOONDEV_API_ENABLED=False in config.py)")
+            print("   Core trading features still work. Enable in src/config.py if needed.")
+
         # Simplified data directory path
         self.base_dir = PROJECT_ROOT / "src" / "agents" / "api_data"
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -115,6 +130,14 @@ class MoonDevAPI:
             'order_trade_time', 'symbol', 'side', 'size', 'price', 'tick_direction',
             'timestamp', 'cross_seq', 'position_idx', 'order_id'
         ]
+
+    def _check_enabled(self, feature_name="this feature"):
+        """Check if API is enabled, print warning if not"""
+        if not self.enabled:
+            print(f"🚫 Moon Dev API disabled - skipping {feature_name}")
+            print(f"   Enable with MOONDEV_API_ENABLED=True in src/config.py")
+            return False
+        return True
 
     def _fetch_csv(self, filename, limit=None):
         """Fetch CSV data from the API with retry logic"""
@@ -397,6 +420,8 @@ class MoonDevAPI:
         Returns:
             pandas.DataFrame: Liquidation data sorted chronologically (oldest first)
         """
+        if not self._check_enabled("liquidation data"):
+            return None
         try:
             print(f"🌙 Moon Dev: Getting liquidation data (limit={limit})...")
 
@@ -410,18 +435,26 @@ class MoonDevAPI:
 
     def get_funding_data(self):
         """Get funding data from API"""
+        if not self._check_enabled("funding data"):
+            return None
         return self._fetch_csv("funding.csv")
 
     def get_token_addresses(self):
         """Get token addresses from API"""
+        if not self._check_enabled("token addresses"):
+            return None
         return self._fetch_csv("new_token_addresses.csv")
 
     def get_oi_total(self):
         """Get total open interest data from API"""
+        if not self._check_enabled("open interest data"):
+            return None
         return self._fetch_csv("oi_total.csv")
 
     def get_oi_data(self):
         """Get detailed open interest data from API"""
+        if not self._check_enabled("open interest data"):
+            return None
         max_retries = 3
         retry_delay = 2  # seconds
 
@@ -468,6 +501,8 @@ class MoonDevAPI:
 
     def get_copybot_follow_list(self):
         """Get current copy trading follow list"""
+        if not self._check_enabled("copybot follow list"):
+            return None
         try:
             print("📋 Moon Dev CopyBot: Fetching follow list...")
             if not self.api_key:
@@ -503,6 +538,8 @@ class MoonDevAPI:
 
     def get_copybot_recent_transactions(self):
         """Get recent copy trading transactions"""
+        if not self._check_enabled("copybot transactions"):
+            return None
         try:
             print("🔄 Moon Dev CopyBot: Fetching recent transactions...")
             if not self.api_key:
@@ -539,14 +576,20 @@ class MoonDevAPI:
 
     def get_agg_positions_hlp(self):
         """Get aggregated positions on HLP data"""
+        if not self._check_enabled("HLP positions"):
+            return None
         return self._fetch_csv("agg_positions_on_hlp.csv")
 
     def get_positions_hlp(self):
         """Get detailed positions on HLP data"""
+        if not self._check_enabled("HLP positions"):
+            return None
         return self._fetch_csv("positions_on_hlp.csv")
 
     def get_whale_addresses(self):
         """Get list of whale addresses"""
+        if not self._check_enabled("whale addresses"):
+            return None
         try:
             print("🐋 Moon Dev API: Fetching whale addresses...")
 
