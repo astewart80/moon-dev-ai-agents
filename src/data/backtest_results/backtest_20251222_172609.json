@@ -1,0 +1,70 @@
+{
+  "config": {
+    "initial_balance": 1000,
+    "symbols": [
+      "BTC",
+      "ETH"
+    ],
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-01",
+    "timeframe": "1H",
+    "trading_fee": 0.0006,
+    "slippage": 0.001
+  },
+  "summary": {
+    "initial_balance": 1000,
+    "final_balance": NaN,
+    "total_pnl": 0.0,
+    "roi_pct": NaN,
+    "total_trades": 2,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate": 0.0,
+    "profit_factor": Infinity,
+    "max_drawdown_pct": NaN,
+    "avg_pnl": NaN,
+    "avg_win": 0,
+    "avg_loss": 0
+  },
+  "close_reasons": {
+    "end_of_backtest": 2
+  },
+  "trades": [
+    {
+      "symbol": "BTC",
+      "side": "SHORT",
+      "entry_price": NaN,
+      "exit_price": NaN,
+      "size": NaN,
+      "notional": 540.0,
+      "pnl_pct": NaN,
+      "pnl_usd": NaN,
+      "open_time": "NaT",
+      "close_time": "NaT",
+      "duration": "NaT",
+      "confidence": 82,
+      "reason": "end_of_backtest"
+    },
+    {
+      "symbol": "ETH",
+      "side": "SHORT",
+      "entry_price": NaN,
+      "exit_price": NaN,
+      "size": NaN,
+      "notional": 539.82504,
+      "pnl_pct": NaN,
+      "pnl_usd": NaN,
+      "open_time": "NaT",
+      "close_time": "NaT",
+      "duration": "NaT",
+      "confidence": 82,
+      "reason": "end_of_backtest"
+    }
+  ],
+  "equity_curve": [
+    [
+      "NaT",
+      NaN
+    ]
+  ]
+}

@@ -7,7 +7,13 @@ Built with love by Moon Dev 🚀
 from src.config import *
 from src import nice_funcs as n
 from src import nice_funcs_hyperliquid as hl
-from src import nice_funcs_aster as aster
+# Only import aster if using that exchange
+aster = None
+if EXCHANGE == "ASTER":
+    try:
+        from src import nice_funcs_aster as aster
+    except:
+        pass
 import pandas as pd
 from datetime import datetime
 import os

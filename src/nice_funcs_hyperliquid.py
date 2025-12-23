@@ -39,7 +39,7 @@ warnings.filterwarnings('ignore')
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-DEFAULT_LEVERAGE = 5  # Change this to adjust leverage globally (1-50x on HyperLiquid)
+DEFAULT_LEVERAGE = 3  # Change this to adjust leverage globally (1-50x on HyperLiquid)
                       # Higher leverage = less margin required, but higher liquidation risk
                       # Examples:
                       # - 5x: $25 position needs $5 margin
@@ -206,6 +206,72 @@ def cancel_all_orders(account):
 
     print(colored('✅ All orders cancelled', 'green'))
     return
+
+def place_tp_sl_orders(symbol, entry_price, position_size, is_long, tp_percent, sl_percent, account):
+    """
+    Place Take Profit and Stop Loss orders on HyperLiquid
+
+    Args:
+        symbol: Token symbol (e.g., 'BTC')
+        entry_price: Entry price of the position
+        position_size: Size of the position (positive number)
+        is_long: True for long, False for short
+        tp_percent: Take profit percentage (e.g., 12.0 for +12%)
+        sl_percent: Stop loss percentage (e.g., 5.0 for -5%)
+        account: HyperLiquid account
+
+    Returns:
+        dict with tp_result and sl_result
+    """
+    print(colored(f'\n🎯 Setting TP/SL orders for {symbol}', 'cyan', attrs=['bold']))
+
+    exchange = Exchange(account, constants.MAINNET_API_URL)
+    sz_decimals, px_decimals = get_sz_px_decimals(symbol)
+
+    # Calculate TP and SL prices based on position direction
+    if is_long:
+        tp_price = round(entry_price * (1 + tp_percent / 100), px_decimals)
+        sl_price = round(entry_price * (1 - sl_percent / 100), px_decimals)
+        # For long: TP sells above entry, SL sells below entry
+        tp_is_buy = False  # Sell to close long
+        sl_is_buy = False  # Sell to close long
+    else:
+        tp_price = round(entry_price * (1 - tp_percent / 100), px_decimals)
+        sl_price = round(entry_price * (1 + sl_percent / 100), px_decimals)
+        # For short: TP buys below entry, SL buys above entry
+        tp_is_buy = True   # Buy to close short
+        sl_is_buy = True   # Buy to close short
+
+    size = round(abs(position_size), sz_decimals)
+
+    print(f"   Entry: ${entry_price:.4f}")
+    print(f"   Position: {'LONG' if is_long else 'SHORT'} {size} {symbol}")
+    print(f"   Take Profit: ${tp_price:.4f} (+{tp_percent}%)")
+    print(f"   Stop Loss: ${sl_price:.4f} (-{sl_percent}%)")
+
+    results = {"tp_result": None, "sl_result": None}
+
+    try:
+        # Place Take Profit order (trigger order)
+        tp_order_type = {"trigger": {"triggerPx": tp_price, "isMarket": True, "tpsl": "tp"}}
+        tp_result = exchange.order(symbol, tp_is_buy, size, tp_price, tp_order_type, reduce_only=True)
+        results["tp_result"] = tp_result
+        print(colored(f'   ✅ Take Profit set at ${tp_price:.4f}', 'green'))
+    except Exception as e:
+        print(colored(f'   ❌ Failed to set TP: {e}', 'red'))
+        results["tp_result"] = {"error": str(e)}
+
+    try:
+        # Place Stop Loss order (trigger order)
+        sl_order_type = {"trigger": {"triggerPx": sl_price, "isMarket": True, "tpsl": "sl"}}
+        sl_result = exchange.order(symbol, sl_is_buy, size, sl_price, sl_order_type, reduce_only=True)
+        results["sl_result"] = sl_result
+        print(colored(f'   ✅ Stop Loss set at ${sl_price:.4f}', 'green'))
+    except Exception as e:
+        print(colored(f'   ❌ Failed to set SL: {e}', 'red'))
+        results["sl_result"] = {"error": str(e)}
+
+    return results
 
 def limit_order(coin, is_buy, sz, limit_px, reduce_only, account):
     """Place a limit order"""
@@ -600,6 +666,9 @@ def add_technical_indicators(df):
         # Add basic indicators
         df['sma_20'] = ta.sma(df['close'], length=20)
         df['sma_50'] = ta.sma(df['close'], length=50)
+        df['sma_200'] = ta.sma(df['close'], length=200)
+        df['ema_12'] = ta.ema(df['close'], length=12)
+        df['ema_26'] = ta.ema(df['close'], length=26)
         df['rsi'] = ta.rsi(df['close'], length=14)
 
         # Add MACD
@@ -610,7 +679,44 @@ def add_technical_indicators(df):
         bbands = ta.bbands(df['close'])
         df = pd.concat([df, bbands], axis=1)
 
-        print("✅ Technical indicators added successfully")
+        # Add ATR (Average True Range) - for volatility and stop placement
+        df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+
+        # Add Stochastic Oscillator - overbought/oversold confirmation
+        stoch = ta.stoch(df['high'], df['low'], df['close'])
+        df = pd.concat([df, stoch], axis=1)
+
+        # Add ADX (Average Directional Index) - trend strength
+        adx = ta.adx(df['high'], df['low'], df['close'], length=14)
+        df = pd.concat([df, adx], axis=1)
+
+        # Add OBV (On-Balance Volume) - volume confirmation
+        df['obv'] = ta.obv(df['close'], df['volume'])
+
+        # Add VWAP (Volume Weighted Average Price) - institutional levels
+        df['vwap'] = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
+
+        # Add Williams %R - momentum
+        df['willr'] = ta.willr(df['high'], df['low'], df['close'], length=14)
+
+        # Add CCI (Commodity Channel Index) - trend/reversals
+        df['cci'] = ta.cci(df['high'], df['low'], df['close'], length=20)
+
+        # Add Fibonacci Retracement Levels (based on recent 50-bar swing)
+        lookback = min(50, len(df))
+        recent_high = df['high'].tail(lookback).max()
+        recent_low = df['low'].tail(lookback).min()
+        fib_range = recent_high - recent_low
+
+        df['fib_high'] = recent_high
+        df['fib_low'] = recent_low
+        df['fib_236'] = recent_high - (fib_range * 0.236)  # 23.6% retracement
+        df['fib_382'] = recent_high - (fib_range * 0.382)  # 38.2% retracement
+        df['fib_500'] = recent_high - (fib_range * 0.500)  # 50% retracement
+        df['fib_618'] = recent_high - (fib_range * 0.618)  # 61.8% retracement (golden ratio)
+        df['fib_786'] = recent_high - (fib_range * 0.786)  # 78.6% retracement
+
+        print("✅ Technical indicators added successfully (14 indicators including Fibonacci)")
         return df
 
     except Exception as e:
@@ -654,13 +760,16 @@ def get_data(symbol, timeframe='15m', bars=100, add_indicators=True):
     df = _process_data_to_df(data)
 
     if not df.empty:
-        # Get the most recent bars
-        df = df.sort_values('timestamp', ascending=False).head(bars).sort_values('timestamp')
-        df = df.reset_index(drop=True)
+        # Sort by timestamp
+        df = df.sort_values('timestamp').reset_index(drop=True)
 
-        # Add technical indicators if requested
+        # Add technical indicators BEFORE cutting to requested bars
+        # This ensures indicators have enough history to calculate
         if add_indicators:
             df = add_technical_indicators(df)
+
+        # Now get the most recent bars (after indicators are calculated)
+        df = df.tail(bars).reset_index(drop=True)
 
         print("\n📊 Data summary:")
         print(f"📈 Total candles: {len(df)}")

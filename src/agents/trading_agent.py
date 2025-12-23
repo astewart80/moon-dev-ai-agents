@@ -81,17 +81,17 @@ Built with love by Moon Dev 🚀
 # ============================================================================
 
 # 🏦 EXCHANGE SELECTION
-EXCHANGE = "ASTER"  # Options: "ASTER", "HYPERLIQUID", "SOLANA"
+EXCHANGE = "HYPERLIQUID"  # Options: "ASTER", "HYPERLIQUID", "SOLANA"
                      # - "ASTER" = Aster DEX futures (supports long/short)
                      # - "HYPERLIQUID" = HyperLiquid perpetuals (supports long/short)
                      # - "SOLANA" = Solana on-chain DEX (long only)
 
 # 🌊 AI MODE SELECTION
-USE_SWARM_MODE = True  # True = 6-model swarm consensus (~45-60s per token)
+USE_SWARM_MODE = False  # True = multi-model swarm consensus, False = single model (faster)
                         # False = Single model fast execution (~10s per token)
 
 # 📈 TRADING MODE SETTINGS
-LONG_ONLY = True  # True = Long positions only (works on all exchanges)
+LONG_ONLY = False  # False = Allow both Long & Short positions (HyperLiquid)
                   # False = Long & Short positions (works on Aster/HyperLiquid)
                   #
                   # When LONG_ONLY = True:
@@ -107,16 +107,16 @@ LONG_ONLY = True  # True = Long positions only (works on all exchanges)
                   # Note: Solana is always LONG_ONLY (exchange limitation)
 
 # 🤖 SINGLE MODEL SETTINGS (only used when USE_SWARM_MODE = False)
-AI_MODEL_TYPE = 'xai'  # Options: 'groq', 'openai', 'claude', 'deepseek', 'xai', 'ollama'
-AI_MODEL_NAME = None   # None = use default, or specify: 'grok-4-fast-reasoning', 'claude-3-5-sonnet-latest', etc.
+AI_MODEL_TYPE = 'xai'  # Options: 'groq', 'openai', 'claude', 'deepseek', 'xai', 'ollama', 'gemini'
+AI_MODEL_NAME = 'grok-2'   # Grok 2 - xAI's powerful reasoning model
 AI_TEMPERATURE = 0.7   # Creativity vs precision (0-1)
-AI_MAX_TOKENS = 1024   # Max tokens for AI response
+AI_MAX_TOKENS = 4096   # Max tokens for AI response (increased for Claude)
 
 # 💰 POSITION SIZING & RISK MANAGEMENT
 USE_PORTFOLIO_ALLOCATION = False # True = Use AI for portfolio allocation across multiple tokens
                                  # False = Simple mode - trade single token at MAX_POSITION_PERCENTAGE
 
-MAX_POSITION_PERCENTAGE = 90     # % of account balance to use as MARGIN per position (0-100)
+MAX_POSITION_PERCENTAGE = 20     # % of account balance to use as MARGIN per position (0-100)
                                  # How it works per exchange:
                                  # - ASTER/HYPERLIQUID: % of balance used as MARGIN (then multiplied by leverage)
                                  #   Example: $100 balance, 90% = $90 margin
@@ -124,7 +124,7 @@ MAX_POSITION_PERCENTAGE = 90     # % of account balance to use as MARGIN per pos
                                  # - SOLANA: Uses % of USDC balance directly (no leverage)
                                  #   Example: 100 USDC, 90% = 90 USDC position
 
-LEVERAGE = 9                    # Leverage multiplier (1-125x on Aster/HyperLiquid)
+LEVERAGE = 3                    # Leverage multiplier (1-50x on HyperLiquid)
                                  # Higher leverage = bigger position with same margin, higher liquidation risk
                                  # Examples with $100 margin:
                                  #           5x = $100 margin → $500 notional position
@@ -134,23 +134,64 @@ LEVERAGE = 9                    # Leverage multiplier (1-125x on Aster/HyperLiqu
 
 # Stop Loss & Take Profit
 STOP_LOSS_PERCENTAGE = 5.0       # % loss to trigger stop loss exit (e.g., 5.0 = -5%)
-TAKE_PROFIT_PERCENTAGE = 5.0     # % gain to trigger take profit exit (e.g., 5.0 = +5%)
+TAKE_PROFIT_PERCENTAGE = 12.0    # % gain to trigger take profit exit (e.g., 12.0 = +12%)
 PNL_CHECK_INTERVAL = 5           # Seconds between P&L checks when position is open
+
+# Trailing Stop Loss
+USE_TRAILING_STOP = True         # Enable trailing stop loss
+TRAILING_STOP_ACTIVATION = 3.0   # Activate trailing stop after this % profit
+TRAILING_STOP_DISTANCE = 2.0     # Trail this % behind highest price
+
+# Confidence Threshold
+MIN_CONFIDENCE_TO_TRADE = 70     # Only trade when AI confidence >= this % (0-100)
+                                 # Higher = fewer but higher quality trades
+
+# 🎯 DYNAMIC POSITION SIZING (based on AI confidence)
+USE_DYNAMIC_SIZING = True        # True = Scale position size by confidence
+                                 # False = Use fixed MAX_POSITION_PERCENTAGE
+DYNAMIC_SIZE_MIN_PCT = 10        # Minimum position % at MIN_CONFIDENCE_TO_TRADE
+DYNAMIC_SIZE_MAX_PCT = 30        # Maximum position % at 100% confidence
+                                 # Example: 70% conf = 10%, 85% conf = 20%, 100% conf = 30%
 
 # Legacy settings (kept for compatibility, not used in new logic)
 usd_size = 25                    # [DEPRECATED] Use MAX_POSITION_PERCENTAGE instead
 max_usd_order_size = 3           # Maximum order chunk size in USD (for Solana chunking)
 
 # 📊 MARKET DATA COLLECTION
-DAYSBACK_4_DATA = 3              # Days of historical data to fetch
-DATA_TIMEFRAME = '1H'            # Bar timeframe: 1m, 3m, 5m, 15m, 30m, 1H, 2H, 4H, 6H, 8H, 12H, 1D, 3D, 1W, 1M
-                                 # Current: 3 days @ 1H = ~72 bars
-                                 # For 15-min: '15m' = ~288 bars
+DAYSBACK_4_DATA = 60             # Days of historical data to fetch (60 days = 360 bars for 4H, enough for SMA 200)
+DATA_TIMEFRAME = '4H'            # Primary bar timeframe for main analysis (4H = less noise, stronger signals)
 SAVE_OHLCV_DATA = False          # True = save data permanently, False = temp data only
+
+# Multi-Timeframe Analysis
+USE_MULTI_TIMEFRAME = False      # Set True to analyze multiple timeframes
+MTF_TIMEFRAMES = ['1H', '4H']    # 1H = Entry timing, 4H = Main trend analysis
+                                 # HyperLiquid supports: 1m, 5m, 15m, 1h, 4h, 1d
+
+# 📊 INDICATOR TOGGLES - Enable/Disable indicators for AI analysis
+INDICATORS = {
+    # Core Indicators
+    "rsi": True,              # RSI (14) - Overbought/Oversold
+    "sma_20": True,           # SMA 20 - Short-term trend
+    "sma_50": True,           # SMA 50 - Medium-term trend
+    "sma_200": True,          # SMA 200 - Long-term trend
+    "macd": True,             # MACD - Momentum
+    "bollinger": True,        # Bollinger Bands - Volatility
+    "volume": True,           # Volume
+    # Additional Indicators
+    "atr": True,              # ATR - Volatility/Stop placement
+    "stochastic": False,       # Stochastic - Overbought/Oversold
+    "adx": True,              # ADX - Trend strength
+    "cci": False,              # CCI - Trend/Reversals
+    "williams_r": False,       # Williams %R - Momentum
+    "obv": False,              # OBV - Volume confirmation (calculated but not shown)
+    "fibonacci": True,        # Fibonacci Retracement - Support/Resistance
+    # Pattern Analysis
+    "golden_cross": True,     # Golden Cross / Death Cross (MA20 vs MA200)
+}
 
 # ⚡ TRADING EXECUTION SETTINGS
 slippage = 199                   # Slippage tolerance (199 = ~2%)
-SLEEP_BETWEEN_RUNS_MINUTES = 15  # Minutes between trading cycles
+SLEEP_BETWEEN_RUNS_MINUTES = 30  # Minutes between trading cycles
 
 # 🎯 TOKEN CONFIGURATION
 
@@ -169,12 +210,28 @@ MONITORED_TOKENS = [
 
 # For ASTER/HYPERLIQUID exchanges: Use trading symbols
 # ⚠️ IMPORTANT: Only used when EXCHANGE = "ASTER" or "HYPERLIQUID"
-# Add symbols you want to trade (e.g., BTC, ETH, SOL, etc.)
-SYMBOLS = [
-    'BTC',      # Bitcoin
-    #'ETH',     # Ethereum
-    #'SOL',     # Solana
-]
+# Toggle coins on/off for analysis - True = enabled, False = disabled
+SYMBOLS_CONFIG = {
+    # All verified available on HyperLiquid
+    'BTC': True,       # Bitcoin
+    'ETH': True,       # Ethereum
+    'SOL': True,       # Solana
+    'DOGE': True,      # Dogecoin
+    'XRP': True,       # Ripple
+    'HBAR': False,     # Hedera
+    'AVAX': False,     # Avalanche
+    'LINK': False,     # Chainlink
+    'ARB': False,      # Arbitrum
+    'OP': False,       # Optimism
+    'SUI': False,      # Sui
+    'APT': False,      # Aptos
+    'TRUMP': False,    # Trump
+    'HYPE': False,     # Hype
+    'PEPE': False,     # Pepe (use kPEPE)
+}
+
+# Active symbols list (auto-generated from SYMBOLS_CONFIG)
+SYMBOLS = [sym for sym, enabled in SYMBOLS_CONFIG.items() if enabled]
 
 # Example: To trade multiple tokens, uncomment the ones you want:
 # MONITORED_TOKENS = [
@@ -300,6 +357,15 @@ from src.agents.swarm_agent import SwarmAgent
 # Load environment variables
 load_dotenv()
 
+# Initialize HyperLiquid account globally (for functions that need it)
+HL_ACCOUNT = None
+if EXCHANGE == "HYPERLIQUID":
+    try:
+        HL_ACCOUNT = n._get_account_from_env()
+        cprint("✅ HyperLiquid account initialized", "green")
+    except Exception as e:
+        cprint(f"❌ Failed to initialize HyperLiquid account: {e}", "red")
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -317,29 +383,80 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
     try:
         cprint(f"\n👁️  Monitoring {token} position for P&L targets...", "cyan", attrs=['bold'])
         cprint(f"   Stop Loss: -{STOP_LOSS_PERCENTAGE}% | Take Profit: +{TAKE_PROFIT_PERCENTAGE}%", "white")
+        if USE_TRAILING_STOP:
+            cprint(f"   Trailing Stop: Activates at +{TRAILING_STOP_ACTIVATION}%, trails {TRAILING_STOP_DISTANCE}% behind peak", "white")
+
+        # Trailing stop tracking
+        highest_pnl = 0
+        trailing_stop_active = False
+        trailing_stop_level = -STOP_LOSS_PERCENTAGE  # Start at regular stop loss
 
         while True:
             # Get current position
-            if EXCHANGE in ["ASTER", "HYPERLIQUID"]:
+            if EXCHANGE == "HYPERLIQUID":
+                positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(token, HL_ACCOUNT)
+                if not im_in_pos:
+                    cprint(f"✅ No position found for {token}", "green")
+                    return True
+                mid_price = n.get_current_price(token)
+                position_size = abs(float(pos_size)) * mid_price
+                pnl_usd = (mid_price - entry_px) * float(pos_size)  # Approximate P&L in USD
+                position = {'position_amount': float(pos_size), 'mark_price': mid_price}
+            elif EXCHANGE == "ASTER":
                 position = n.get_position(token)
+                if not position or position.get('position_amount', 0) == 0:
+                    cprint(f"✅ No position found for {token}", "green")
+                    return True
+                pnl_pct = position.get('pnl_percentage', 0)
+                pnl_usd = position.get('pnl', 0)
+                position_size = abs(position.get('position_amount', 0)) * position.get('mark_price', 0)
             else:
                 position_usd = n.get_token_balance_usd(token)
                 if position_usd == 0:
                     cprint(f"✅ Position closed for {token}", "green")
                     return True
-                position = {"position_amount": position_usd}  # Simplified for Solana
-
-            if not position or (EXCHANGE in ["ASTER", "HYPERLIQUID"] and position.get('position_amount', 0) == 0):
-                cprint(f"✅ No position found for {token}", "green")
-                return True
+                position = {"position_amount": position_usd}
+                pnl_pct = 0
+                pnl_usd = 0
+                position_size = position_usd
 
             # For Aster/HyperLiquid, check P&L percentage
             if EXCHANGE in ["ASTER", "HYPERLIQUID"]:
-                pnl_pct = position.get('pnl_percentage', 0)
-                pnl_usd = position.get('pnl', 0)
-                position_size = abs(position.get('position_amount', 0)) * position.get('mark_price', 0)
 
-                cprint(f"📊 Position: ${position_size:,.2f} | P&L: ${pnl_usd:,.2f} ({pnl_pct:+.2f}%)", "cyan")
+                # Update trailing stop if enabled
+                if USE_TRAILING_STOP:
+                    if pnl_pct > highest_pnl:
+                        highest_pnl = pnl_pct
+                        # Activate trailing stop once we hit activation threshold
+                        if highest_pnl >= TRAILING_STOP_ACTIVATION and not trailing_stop_active:
+                            trailing_stop_active = True
+                            cprint(f"🎯 TRAILING STOP ACTIVATED at {highest_pnl:.2f}% profit!", "green", attrs=['bold'])
+                        # Update trailing stop level
+                        if trailing_stop_active:
+                            trailing_stop_level = highest_pnl - TRAILING_STOP_DISTANCE
+                            cprint(f"📊 Position: ${position_size:,.2f} | P&L: {pnl_pct:+.2f}% | Peak: {highest_pnl:.2f}% | Trail Stop: {trailing_stop_level:+.2f}%", "cyan")
+                        else:
+                            cprint(f"📊 Position: ${position_size:,.2f} | P&L: {pnl_pct:+.2f}% | Peak: {highest_pnl:.2f}%", "cyan")
+                    else:
+                        if trailing_stop_active:
+                            cprint(f"📊 Position: ${position_size:,.2f} | P&L: {pnl_pct:+.2f}% | Peak: {highest_pnl:.2f}% | Trail Stop: {trailing_stop_level:+.2f}%", "cyan")
+                        else:
+                            cprint(f"📊 Position: ${position_size:,.2f} | P&L: {pnl_pct:+.2f}%", "cyan")
+
+                    # Check trailing stop
+                    if trailing_stop_active and pnl_pct <= trailing_stop_level:
+                        cprint(f"📉 TRAILING STOP HIT! P&L: {pnl_pct:.2f}% (trail stop: {trailing_stop_level:+.2f}%)", "yellow", attrs=['bold'])
+                        cprint(f"💰 Locked in profit from peak of {highest_pnl:.2f}%!", "green")
+                        cprint(f"🔄 Closing position...", "yellow")
+
+                        # Close position
+                        if position['position_amount'] > 0:
+                            n.limit_sell(token, position_size, slippage=0, leverage=LEVERAGE)
+                        else:
+                            n.limit_buy(token, position_size, slippage=0, leverage=LEVERAGE)
+                        return True
+                else:
+                    cprint(f"📊 Position: ${position_size:,.2f} | P&L: ${pnl_usd:,.2f} ({pnl_pct:+.2f}%)", "cyan")
 
                 # Check stop loss
                 if pnl_pct <= -STOP_LOSS_PERCENTAGE:
@@ -413,24 +530,44 @@ def get_account_balance():
         traceback.print_exc()
         return 0
 
-def calculate_position_size(account_balance):
-    """Calculate position size based on account balance and MAX_POSITION_PERCENTAGE
+def calculate_position_size(account_balance, confidence=None):
+    """Calculate position size based on account balance and confidence level
 
     Args:
         account_balance: Current account balance in USD
+        confidence: AI confidence percentage (0-100). If None, uses MAX_POSITION_PERCENTAGE
 
     Returns:
         float: Position size in USD (notional value)
     """
+    # Determine position percentage based on confidence (dynamic sizing)
+    if USE_DYNAMIC_SIZING and confidence is not None:
+        # Scale position size linearly between MIN and MAX based on confidence
+        # At MIN_CONFIDENCE_TO_TRADE -> DYNAMIC_SIZE_MIN_PCT
+        # At 100% confidence -> DYNAMIC_SIZE_MAX_PCT
+        confidence_range = 100 - MIN_CONFIDENCE_TO_TRADE  # e.g., 100 - 70 = 30
+        confidence_above_min = confidence - MIN_CONFIDENCE_TO_TRADE  # e.g., 85 - 70 = 15
+        confidence_ratio = max(0, min(1, confidence_above_min / confidence_range))  # 0 to 1
+
+        position_pct = DYNAMIC_SIZE_MIN_PCT + (DYNAMIC_SIZE_MAX_PCT - DYNAMIC_SIZE_MIN_PCT) * confidence_ratio
+        sizing_mode = "DYNAMIC"
+    else:
+        position_pct = MAX_POSITION_PERCENTAGE
+        sizing_mode = "FIXED"
+
     if EXCHANGE in ["ASTER", "HYPERLIQUID"]:
-        # For leveraged exchanges: MAX_POSITION_PERCENTAGE is the MARGIN to use
+        # For leveraged exchanges: position_pct is the MARGIN to use
         # Notional position = margin × leverage
-        margin_to_use = account_balance * (MAX_POSITION_PERCENTAGE / 100)
+        margin_to_use = account_balance * (position_pct / 100)
         notional_position = margin_to_use * LEVERAGE
 
-        cprint(f"\n📊 Position Calculation ({EXCHANGE}):", "yellow", attrs=['bold'])
+        cprint(f"\n📊 Position Calculation ({EXCHANGE} - {sizing_mode}):", "yellow", attrs=['bold'])
         cprint(f"   💵 Account Balance: ${account_balance:,.2f}", "white")
-        cprint(f"   📈 Max Position %: {MAX_POSITION_PERCENTAGE}%", "white")
+        if USE_DYNAMIC_SIZING and confidence is not None:
+            cprint(f"   🎯 AI Confidence: {confidence}%", "magenta", attrs=['bold'])
+            cprint(f"   📈 Dynamic Size: {position_pct:.1f}% (range: {DYNAMIC_SIZE_MIN_PCT}-{DYNAMIC_SIZE_MAX_PCT}%)", "magenta")
+        else:
+            cprint(f"   📈 Position %: {position_pct}%", "white")
         cprint(f"   💰 Margin to Use: ${margin_to_use:,.2f}", "green", attrs=['bold'])
         cprint(f"   ⚡ Leverage: {LEVERAGE}x", "white")
         cprint(f"   💎 Notional Position: ${notional_position:,.2f}", "cyan", attrs=['bold'])
@@ -438,11 +575,15 @@ def calculate_position_size(account_balance):
         return notional_position
     else:
         # For Solana: No leverage, direct position size
-        position_size = account_balance * (MAX_POSITION_PERCENTAGE / 100)
+        position_size = account_balance * (position_pct / 100)
 
-        cprint(f"\n📊 Position Calculation (SOLANA):", "yellow", attrs=['bold'])
+        cprint(f"\n📊 Position Calculation (SOLANA - {sizing_mode}):", "yellow", attrs=['bold'])
         cprint(f"   💵 USDC Balance: ${account_balance:,.2f}", "white")
-        cprint(f"   📈 Max Position %: {MAX_POSITION_PERCENTAGE}%", "white")
+        if USE_DYNAMIC_SIZING and confidence is not None:
+            cprint(f"   🎯 AI Confidence: {confidence}%", "magenta", attrs=['bold'])
+            cprint(f"   📈 Dynamic Size: {position_pct:.1f}%", "magenta")
+        else:
+            cprint(f"   📈 Position %: {position_pct}%", "white")
         cprint(f"   💎 Position Size: ${position_size:,.2f}", "cyan", attrs=['bold'])
 
         return position_size
@@ -538,6 +679,7 @@ class TradingAgent:
                 cprint(f"✅ DataFrame received: {len(market_data)} bars", "green")
                 cprint(f"📅 Date range: {market_data.index[0]} to {market_data.index[-1]}", "yellow")
                 cprint(f"🕐 Timeframe: {DATA_TIMEFRAME}", "yellow")
+                cprint(f"📊 Columns: {list(market_data.columns)}", "yellow")
 
                 # Show the first 5 bars
                 cprint("\n📈 First 5 Bars (OHLCV):", "cyan")
@@ -547,18 +689,212 @@ class TradingAgent:
                 cprint("\n📉 Last 3 Bars (Most Recent):", "cyan")
                 print(market_data.tail(3).to_string())
 
-                # Format for swarm
+                # Select key columns for AI analysis (prevent truncation)
+                key_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+                indicator_cols = ['sma_20', 'sma_50', 'sma_200', 'rsi', 'MACD_12_26_9', 'MACDs_12_26_9', 'BBL_5_2.0', 'BBM_5_2.0', 'BBU_5_2.0']
+
+                # Get available columns
+                available_cols = [c for c in key_cols + indicator_cols if c in market_data.columns]
+                data_subset = market_data[available_cols].copy()
+
+                # Get latest values for summary
+                latest = market_data.iloc[-1]
+                rsi_val = latest.get('rsi', None)
+                sma20_val = latest.get('sma_20', None)
+                sma50_val = latest.get('sma_50', None)
+                sma200_val = latest.get('sma_200', None)
+                close_val = latest.get('close', None)
+
+                # Detect Golden Cross / Death Cross (MA20 crossing MA200)
+                def detect_ma_crossover(df):
+                    """Detect if MA20 recently crossed MA200"""
+                    if 'sma_20' not in df.columns or 'sma_200' not in df.columns:
+                        return "N/A - MA200 not available"
+
+                    # Get last 5 bars to detect recent crossover
+                    recent = df.tail(5).copy()
+                    recent = recent.dropna(subset=['sma_20', 'sma_200'])
+
+                    if len(recent) < 2:
+                        return "N/A - Not enough data"
+
+                    # Check current position
+                    current_above = recent['sma_20'].iloc[-1] > recent['sma_200'].iloc[-1]
+
+                    # Check for crossover in last 5 bars
+                    for i in range(len(recent) - 1):
+                        prev_above = recent['sma_20'].iloc[i] > recent['sma_200'].iloc[i]
+                        next_above = recent['sma_20'].iloc[i + 1] > recent['sma_200'].iloc[i + 1]
+
+                        if not prev_above and next_above:
+                            return "🟢 GOLDEN CROSS DETECTED (MA20 crossed ABOVE MA200) - STRONG BUY SIGNAL"
+                        elif prev_above and not next_above:
+                            return "🔴 DEATH CROSS DETECTED (MA20 crossed BELOW MA200) - STRONG SELL SIGNAL"
+
+                    # No crossover, report current position
+                    if current_above:
+                        return "MA20 ABOVE MA200 (Bullish trend)"
+                    else:
+                        return "MA20 BELOW MA200 (Bearish trend)"
+
+                crossover_signal = detect_ma_crossover(market_data)
+
+                # Format values safely
+                def fmt_price(v):
+                    return f"${v:,.2f}" if isinstance(v, (int, float)) and not pd.isna(v) else "N/A"
+                def fmt_rsi(v):
+                    if isinstance(v, (int, float)) and not pd.isna(v):
+                        label = " (OVERSOLD)" if v < 30 else " (OVERBOUGHT)" if v > 70 else ""
+                        return f"{v:.1f}{label}"
+                    return "N/A"
+                def fmt_sma(sma, price):
+                    if isinstance(sma, (int, float)) and isinstance(price, (int, float)) and not pd.isna(sma) and not pd.isna(price):
+                        label = " (Price ABOVE)" if price > sma else " (Price BELOW)"
+                        return f"${sma:,.2f}{label}"
+                    return "N/A"
+
+                # Get MACD and BB values
+                macd_val = latest.get('MACD_12_26_9', None)
+                macd_signal = latest.get('MACDs_12_26_9', None)
+                bb_upper = latest.get('BBU_5_2.0', latest.get('BBU_5_2.0_2.0', None))
+                bb_lower = latest.get('BBL_5_2.0', latest.get('BBL_5_2.0_2.0', None))
+
+                def fmt_macd(m, s):
+                    if isinstance(m, (int, float)) and isinstance(s, (int, float)) and not pd.isna(m) and not pd.isna(s):
+                        signal = "BULLISH" if m > s else "BEARISH"
+                        return f"{m:.6f} (Signal: {s:.6f}) - {signal}"
+                    return "N/A"
+
+                def fmt_bb(upper, lower, price):
+                    if all(isinstance(x, (int, float)) and not pd.isna(x) for x in [upper, lower, price]):
+                        if price > upper:
+                            return f"${upper:,.2f} / ${lower:,.2f} - Price ABOVE upper band (OVERBOUGHT)"
+                        elif price < lower:
+                            return f"${upper:,.2f} / ${lower:,.2f} - Price BELOW lower band (OVERSOLD)"
+                        else:
+                            return f"${upper:,.2f} / ${lower:,.2f} - Price within bands"
+                    return "N/A"
+
+                # Format for AI with explicit indicator summary (compact version)
+                # Build column list for recent price action (include sma_200 if available)
+                price_action_cols = ['timestamp', 'close', 'volume', 'rsi', 'sma_20', 'sma_50']
+                if 'sma_200' in data_subset.columns:
+                    price_action_cols.append('sma_200')
+
+                # Get additional indicators
+                atr_val = latest.get('atr', None)
+                stoch_k = latest.get('STOCHk_14_3_3', None)
+                stoch_d = latest.get('STOCHd_14_3_3', None)
+                adx_val = latest.get('ADX_14', None)
+                cci_val = latest.get('cci', None)
+                willr_val = latest.get('willr', None)
+
+                # Get Fibonacci levels
+                fib_high = latest.get('fib_high', None)
+                fib_low = latest.get('fib_low', None)
+                fib_236 = latest.get('fib_236', None)
+                fib_382 = latest.get('fib_382', None)
+                fib_500 = latest.get('fib_500', None)
+                fib_618 = latest.get('fib_618', None)
+                fib_786 = latest.get('fib_786', None)
+
+                def fmt_stoch(k, d):
+                    if isinstance(k, (int, float)) and isinstance(d, (int, float)) and not pd.isna(k) and not pd.isna(d):
+                        signal = "OVERBOUGHT" if k > 80 else "OVERSOLD" if k < 20 else "NEUTRAL"
+                        return f"K:{k:.1f} D:{d:.1f} - {signal}"
+                    return "N/A"
+
+                def fmt_adx(v):
+                    if isinstance(v, (int, float)) and not pd.isna(v):
+                        strength = "STRONG TREND" if v > 25 else "WEAK/NO TREND"
+                        return f"{v:.1f} - {strength}"
+                    return "N/A"
+
+                # Multi-timeframe summary
+                mtf_summary = ""
+                if USE_MULTI_TIMEFRAME:
+                    mtf_summary = "\n=== MULTI-TIMEFRAME ANALYSIS ===\n"
+                    for tf in MTF_TIMEFRAMES:
+                        if tf != DATA_TIMEFRAME:
+                            try:
+                                tf_data = n.get_data(token, timeframe=tf, bars=50, add_indicators=True)
+                                if not tf_data.empty:
+                                    tf_latest = tf_data.iloc[-1]
+                                    tf_rsi = tf_latest.get('rsi', None)
+                                    tf_trend = "BULLISH" if tf_latest.get('close', 0) > tf_latest.get('sma_50', 0) else "BEARISH"
+                                    tf_macd = tf_latest.get('MACD_12_26_9', 0)
+                                    tf_signal = tf_latest.get('MACDs_12_26_9', 0)
+                                    tf_macd_bias = "BULLISH" if tf_macd > tf_signal else "BEARISH"
+                                    rsi_str = f"{tf_rsi:.1f}" if tf_rsi else "N/A"
+                                    mtf_summary += f"{tf}: RSI={rsi_str} | Trend={tf_trend} | MACD={tf_macd_bias}\n"
+                            except Exception as mtf_err:
+                                cprint(f"⚠️ Multi-timeframe {tf} error: {mtf_err}", "yellow")
+                                mtf_summary += f"{tf}: Data unavailable\n"
+
+                # Build dynamic indicator sections based on toggles
+                core_indicators = f"Close Price: {fmt_price(close_val)}\n"
+                if INDICATORS.get("rsi", True):
+                    core_indicators += f"RSI (14): {fmt_rsi(rsi_val)}\n"
+                if INDICATORS.get("sma_20", True):
+                    core_indicators += f"SMA 20: {fmt_sma(sma20_val, close_val)}\n"
+                if INDICATORS.get("sma_50", True):
+                    core_indicators += f"SMA 50: {fmt_sma(sma50_val, close_val)}\n"
+                if INDICATORS.get("sma_200", True):
+                    core_indicators += f"SMA 200 (Long-term trend): {fmt_sma(sma200_val, close_val)}\n"
+                if INDICATORS.get("macd", True):
+                    core_indicators += f"MACD: {fmt_macd(macd_val, macd_signal)}\n"
+                if INDICATORS.get("bollinger", True):
+                    core_indicators += f"Bollinger Bands: {fmt_bb(bb_upper, bb_lower, close_val)}\n"
+                if INDICATORS.get("volume", True):
+                    core_indicators += f"Volume: {latest.get('volume', 'N/A'):,.0f}\n"
+
+                additional_indicators = ""
+                if INDICATORS.get("atr", True):
+                    additional_indicators += f"ATR (Volatility): {f'${atr_val:.2f}' if atr_val and not pd.isna(atr_val) else 'N/A'}\n"
+                if INDICATORS.get("stochastic", True):
+                    additional_indicators += f"Stochastic: {fmt_stoch(stoch_k, stoch_d)}\n"
+                if INDICATORS.get("adx", True):
+                    additional_indicators += f"ADX (Trend Strength): {fmt_adx(adx_val)}\n"
+                if INDICATORS.get("cci", True):
+                    additional_indicators += f"CCI: {f'{cci_val:.1f}' if cci_val and not pd.isna(cci_val) else 'N/A'}\n"
+                if INDICATORS.get("williams_r", True):
+                    additional_indicators += f"Williams %R: {f'{willr_val:.1f}' if willr_val and not pd.isna(willr_val) else 'N/A'}\n"
+
+                fib_section = ""
+                if INDICATORS.get("fibonacci", True):
+                    fib_section = f"""
+=== FIBONACCI RETRACEMENT LEVELS (50-bar range) ===
+Swing High: {f'${fib_high:.4f}' if fib_high and not pd.isna(fib_high) else 'N/A'}
+23.6% Level: {f'${fib_236:.4f}' if fib_236 and not pd.isna(fib_236) else 'N/A'}
+38.2% Level: {f'${fib_382:.4f}' if fib_382 and not pd.isna(fib_382) else 'N/A'}
+50.0% Level: {f'${fib_500:.4f}' if fib_500 and not pd.isna(fib_500) else 'N/A'}
+61.8% Level (Golden): {f'${fib_618:.4f}' if fib_618 and not pd.isna(fib_618) else 'N/A'}
+78.6% Level: {f'${fib_786:.4f}' if fib_786 and not pd.isna(fib_786) else 'N/A'}
+Swing Low: {f'${fib_low:.4f}' if fib_low and not pd.isna(fib_low) else 'N/A'}
+Price vs Fib: {f'Near {fib_618:.4f} (61.8% - KEY LEVEL)' if fib_618 and close_val and abs(close_val - fib_618) / fib_618 < 0.01 else f'Near {fib_500:.4f} (50%)' if fib_500 and close_val and abs(close_val - fib_500) / fib_500 < 0.01 else f'Near {fib_382:.4f} (38.2%)' if fib_382 and close_val and abs(close_val - fib_382) / fib_382 < 0.01 else 'Between levels'}
+"""
+
+                crossover_section = ""
+                if INDICATORS.get("golden_cross", True):
+                    crossover_section = f"""
+=== MA CROSSOVER ANALYSIS (Golden Cross / Death Cross) ===
+{crossover_signal}
+"""
+
                 formatted = f"""
 TOKEN: {token}
-TIMEFRAME: {DATA_TIMEFRAME} bars
-TOTAL BARS: {len(market_data)}
-DATE RANGE: {market_data.index[0]} to {market_data.index[-1]}
+TIMEFRAME: {DATA_TIMEFRAME}
+ANALYSIS TIMESTAMP: {market_data.iloc[-1].get('timestamp', 'N/A')}
 
-RECENT PRICE ACTION (Last 10 bars):
-{market_data.tail(10).to_string()}
-
-FULL DATASET:
-{market_data.to_string()}
+=== CURRENT INDICATOR VALUES (MOST IMPORTANT) ===
+{core_indicators}
+=== ADDITIONAL INDICATORS ===
+{additional_indicators}
+{fib_section}
+{crossover_section}
+{mtf_summary}
+=== RECENT PRICE ACTION (Last 50 bars) ===
+{data_subset[[c for c in price_action_cols if c in data_subset.columns]].tail(50).to_string()}
 """
             else:
                 # If it's not a DataFrame, show what we got
@@ -686,7 +1022,7 @@ FULL DATASET:
             else:
                 # Prepare strategy context
                 strategy_context = ""
-                if 'strategy_signals' in market_data:
+                if isinstance(market_data, dict) and 'strategy_signals' in market_data:
                     strategy_context = f"""
 Strategy Signals Available:
 {json.dumps(market_data['strategy_signals'], indent=2)}
@@ -694,10 +1030,13 @@ Strategy Signals Available:
                 else:
                     strategy_context = "No strategy signals available."
 
+                # Format market data with indicator summary (same as swarm mode)
+                formatted_data = self._format_market_data_for_swarm(token, market_data)
+
                 # Call AI model via model factory
                 response = self.chat_with_ai(
                     TRADING_PROMPT.format(strategy_context=strategy_context),
-                    f"Market Data to Analyze:\n{market_data}"
+                    f"Market Data to Analyze:\n{formatted_data}"
                 )
 
                 if not response:
@@ -709,12 +1048,17 @@ Strategy Signals Available:
                 action = lines[0].strip() if lines else "NOTHING"
 
                 # Extract confidence from the response (assuming it's mentioned as a percentage)
-                confidence = 0
+                confidence = 50  # Default
                 for line in lines:
                     if 'confidence' in line.lower():
-                        # Extract number from string like "Confidence: 75%"
+                        # Extract number from string like "Confidence: 75%" or "75% confidence"
                         try:
-                            confidence = int(''.join(filter(str.isdigit, line)))
+                            import re
+                            # Look for patterns like "65%", "65 %", or just a number near "confidence"
+                            match = re.search(r'(\d{1,3})\s*%', line)
+                            if match:
+                                confidence = min(int(match.group(1)), 100)  # Cap at 100%
+                            break  # Stop after first confidence found
                         except:
                             confidence = 50  # Default if not found
 
@@ -828,10 +1172,25 @@ Example format:
                     continue
                     
                 print(f"\n🎯 Processing allocation for {token}...")
-                
+
                 try:
                     # Get current position value
-                    current_position = n.get_token_balance_usd(token)
+                    if EXCHANGE in ["ASTER", "HYPERLIQUID"]:
+                        if EXCHANGE == "HYPERLIQUID":
+                            positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_perc, is_long = n.get_position(token, HL_ACCOUNT)
+                            if im_in_pos:
+                                mid_price = n.get_current_price(token)
+                                current_position = abs(float(pos_size)) * mid_price
+                            else:
+                                current_position = 0
+                        else:
+                            position = n.get_position(token)
+                            if position and position.get('position_amount', 0) != 0:
+                                current_position = abs(position.get('position_amount', 0)) * position.get('mark_price', 0)
+                            else:
+                                current_position = 0
+                    else:
+                        current_position = n.get_token_balance_usd(token)
                     target_allocation = amount
                     
                     print(f"🎯 Target allocation: ${target_allocation:.2f} USD")
@@ -872,7 +1231,22 @@ Example format:
             action = row['action']
 
             # Check if we have a position
-            current_position = n.get_token_balance_usd(token)
+            if EXCHANGE in ["ASTER", "HYPERLIQUID"]:
+                if EXCHANGE == "HYPERLIQUID":
+                    positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_perc, is_long = n.get_position(token, HL_ACCOUNT)
+                    if im_in_pos:
+                        mid_price = n.get_current_price(token)
+                        current_position = abs(float(pos_size)) * mid_price
+                    else:
+                        current_position = 0
+                else:
+                    position = n.get_position(token)
+                    if position and position.get('position_amount', 0) != 0:
+                        current_position = abs(position.get('position_amount', 0)) * position.get('mark_price', 0)
+                    else:
+                        current_position = 0
+            else:
+                current_position = n.get_token_balance_usd(token)
 
             cprint(f"\n{'='*60}", "cyan")
             cprint(f"🎯 Token: {token_short}", "cyan", attrs=['bold'])
@@ -880,13 +1254,24 @@ Example format:
             cprint(f"💼 Current Position: ${current_position:.2f}", "white")
             cprint(f"{'='*60}", "cyan")
 
+            # Check confidence threshold for new positions
+            confidence = row['confidence']
+            if current_position == 0 and action in ["BUY", "SELL"] and confidence < MIN_CONFIDENCE_TO_TRADE:
+                cprint(f"⚠️  Confidence {confidence}% < {MIN_CONFIDENCE_TO_TRADE}% threshold - SKIPPING TRADE", "yellow", attrs=['bold'])
+                cprint(f"📊 Waiting for higher confidence signal...", "cyan")
+                continue
+
             if current_position > 0:
                 # We have a position - take action based on signal
                 if action == "SELL":
                     cprint(f"🚨 SELL signal with position - CLOSING POSITION", "white", "on_red")
                     try:
-                        cprint(f"📉 Executing chunk_kill (${max_usd_order_size} chunks)...", "yellow")
-                        n.chunk_kill(token, max_usd_order_size, slippage)
+                        if EXCHANGE == "HYPERLIQUID":
+                            cprint(f"📉 Executing kill_switch for {token}...", "yellow")
+                            n.kill_switch(token, HL_ACCOUNT)
+                        else:
+                            cprint(f"📉 Executing chunk_kill (${max_usd_order_size} chunks)...", "yellow")
+                            n.chunk_kill(token, max_usd_order_size, slippage)
                         cprint(f"✅ Position closed successfully!", "white", "on_green")
                     except Exception as e:
                         cprint(f"❌ Error closing position: {str(e)}", "white", "on_red")
@@ -904,9 +1289,9 @@ Example format:
                         cprint(f"📊 LONG ONLY mode: Can't open short, doing nothing", "cyan")
                     else:
                         # SHORT MODE ENABLED - Open short position
-                        # Get account balance and calculate position size
+                        # Get account balance and calculate position size with dynamic sizing
                         account_balance = get_account_balance()
-                        position_size = calculate_position_size(account_balance)
+                        position_size = calculate_position_size(account_balance, confidence)
 
                         cprint(f"📉 SELL signal with no position - OPENING SHORT", "white", "on_red")
                         cprint(f"⚡ {EXCHANGE} mode: Opening ${position_size:,.2f} short position", "yellow")
@@ -920,6 +1305,13 @@ Example format:
                                 cprint(f"📉 Executing market_sell to open short (${position_size:,.2f})...", "yellow")
                                 n.market_sell(token, position_size, slippage, leverage=LEVERAGE)
                             cprint(f"✅ Short position opened successfully!", "white", "on_green")
+
+                            # Place TP/SL orders on HyperLiquid
+                            if EXCHANGE == "HYPERLIQUID":
+                                time.sleep(2)  # Wait for position to settle
+                                positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(token, HL_ACCOUNT)
+                                if im_in_pos and entry_px:
+                                    n.place_tp_sl_orders(token, entry_px, abs(pos_size), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
                         except Exception as e:
                             cprint(f"❌ Error opening short position: {str(e)}", "white", "on_red")
                 elif action == "NOTHING":
@@ -931,11 +1323,11 @@ Example format:
                     if USE_PORTFOLIO_ALLOCATION:
                         cprint(f"📊 Portfolio allocation will handle entry", "white", "on_cyan")
                     else:
-                        # Simple mode: Open position at MAX_POSITION_PERCENTAGE
+                        # Simple mode: Open position with dynamic sizing based on confidence
                         account_balance = get_account_balance()
-                        position_size = calculate_position_size(account_balance)
+                        position_size = calculate_position_size(account_balance, confidence)
 
-                        cprint(f"💰 Opening position at MAX_POSITION_PERCENTAGE", "white", "on_green")
+                        cprint(f"💰 Opening position with {'DYNAMIC' if USE_DYNAMIC_SIZING else 'FIXED'} sizing", "white", "on_green")
                         try:
                             if EXCHANGE in ["ASTER", "HYPERLIQUID"]:
                                 success = n.ai_entry(token, position_size, leverage=LEVERAGE)
@@ -947,7 +1339,19 @@ Example format:
 
                                 # Verify position was actually opened
                                 time.sleep(2)  # Brief delay for order to settle
-                                if EXCHANGE in ["ASTER", "HYPERLIQUID"]:
+                                if EXCHANGE == "HYPERLIQUID":
+                                    positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(token, HL_ACCOUNT)
+                                    if im_in_pos:
+                                        mid_price = n.get_current_price(token)
+                                        position_usd = abs(float(pos_size)) * mid_price
+                                        cprint(f"📊 Confirmed: ${position_usd:,.2f} position | P&L: {pnl_pct:+.2f}%", "green", attrs=['bold'])
+
+                                        # Place TP/SL orders on HyperLiquid
+                                        if entry_px:
+                                            n.place_tp_sl_orders(token, entry_px, abs(pos_size), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
+                                    else:
+                                        cprint(f"⚠️  Warning: Position verification failed - no position found!", "yellow")
+                                elif EXCHANGE == "ASTER":
                                     position = n.get_position(token)
                                     if position and position.get('position_amount', 0) != 0:
                                         pnl_pct = position.get('pnl_percentage', 0)
@@ -1058,7 +1462,10 @@ Example format:
         try:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cprint(f"\n⏰ AI Agent Run Starting at {current_time}", "white", "on_green")
-            
+
+            # Reset recommendations for this cycle (prevents accumulation across cycles)
+            self.recommendations_df = pd.DataFrame(columns=['token', 'action', 'confidence', 'reasoning'])
+
             # Collect OHLCV data for all tokens using this agent's config
             # Use SYMBOLS for Aster/HyperLiquid, MONITORED_TOKENS for Solana
             if EXCHANGE in ["ASTER", "HYPERLIQUID"]:
@@ -1159,7 +1566,13 @@ def main():
             monitored_token = None
 
             for token in SYMBOLS if EXCHANGE in ["ASTER", "HYPERLIQUID"] else MONITORED_TOKENS:
-                if EXCHANGE in ["ASTER", "HYPERLIQUID"]:
+                if EXCHANGE == "HYPERLIQUID":
+                    positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(token, HL_ACCOUNT)
+                    if im_in_pos:
+                        has_position = True
+                        monitored_token = token
+                        break
+                elif EXCHANGE == "ASTER":
                     position = n.get_position(token)
                     if position and position.get('position_amount', 0) != 0:
                         has_position = True
