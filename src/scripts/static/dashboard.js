@@ -1,5 +1,6 @@
         let currentSettings = {};
         let analysisReports = {};
+        let isSaving = false;  // Prevent fetchData from overwriting during save
 
         // Theme Toggle
         function toggleTheme() {
@@ -70,21 +71,16 @@
                     const pnl24hLabel = document.getElementById('pnl-24h-label');
                     const hours24h = data.account.hours_24h || 0;
 
+                    // Show 24H P/L with available data
                     if (pnl24h !== null && pnl24h !== undefined) {
                         const pct = data.account.pnl_24h_pct || 0;
                         pnl24hEl.textContent = (pnl24h >= 0 ? '+' : '') + '$' + pnl24h.toFixed(2) + ' (' + (pnl24h >= 0 ? '+' : '') + pct.toFixed(1) + '%)';
                         pnl24hEl.style.color = pnl24h >= 0 ? 'var(--profit)' : 'var(--loss)';
-                        // Update label to show actual period
-                        if (hours24h >= 24) {
-                            pnl24hLabel.textContent = '24h P/L';
-                        } else {
-                            pnl24hLabel.textContent = Math.round(hours24h) + 'h P/L';
-                        }
                     } else {
-                        pnl24hEl.textContent = 'Collecting...';
+                        pnl24hEl.textContent = 'N/A';
                         pnl24hEl.style.color = 'var(--text-muted)';
-                        pnl24hLabel.textContent = '24h P/L';
                     }
+                    pnl24hLabel.textContent = '24H P/L';
 
                     // 7d P/L
                     const pnl7d = data.account.pnl_7d;
@@ -92,23 +88,16 @@
                     const pnl7dLabel = document.getElementById('pnl-7d-label');
                     const hours7d = data.account.hours_7d || 0;
 
-                    if (pnl7d !== null && pnl7d !== undefined) {
+                    // Only show 7D P/L if we have at least 7 days (168 hours) of data
+                    if (pnl7d !== null && pnl7d !== undefined && hours7d >= 168) {
                         const pct = data.account.pnl_7d_pct || 0;
                         pnl7dEl.textContent = (pnl7d >= 0 ? '+' : '') + '$' + pnl7d.toFixed(2) + ' (' + (pnl7d >= 0 ? '+' : '') + pct.toFixed(1) + '%)';
                         pnl7dEl.style.color = pnl7d >= 0 ? 'var(--profit)' : 'var(--loss)';
-                        // Update label to show actual period
-                        if (hours7d >= 168) {
-                            pnl7dLabel.textContent = '7D P/L';
-                        } else if (hours7d >= 24) {
-                            pnl7dLabel.textContent = Math.round(hours7d / 24) + 'D P/L';
-                        } else {
-                            pnl7dLabel.textContent = Math.round(hours7d) + 'h P/L';
-                        }
                     } else {
-                        pnl7dEl.textContent = 'Collecting...';
+                        pnl7dEl.textContent = 'N/A';
                         pnl7dEl.style.color = 'var(--text-muted)';
-                        pnl7dLabel.textContent = '7D P/L';
                     }
+                    pnl7dLabel.textContent = '7D P/L';
 
                     // Positions
                     const posContainer = document.getElementById('positions-container');
@@ -117,9 +106,11 @@
                         posContainer.innerHTML = data.account.positions.map(pos => {
                             const isLong = pos.side.toLowerCase() === 'long';
                             const pnlClass = pos.pnl_percent >= 0 ? 'positive' : 'negative';
-                            // Calculate TP/SL prices (TP +12%, SL -5%)
-                            const tpPrice = isLong ? pos.entry_price * 1.12 : pos.entry_price * 0.88;
-                            const slPrice = isLong ? pos.entry_price * 0.95 : pos.entry_price * 1.05;
+                            // Use actual TP/SL from HyperLiquid
+                            const tpPrice = pos.tp_price;
+                            const slPrice = pos.sl_price;
+                            const tpPct = pos.tp_pct;
+                            const slPct = pos.sl_pct;
                             // Get fills for this symbol
                             const symbolFills = fills.filter(f => f.symbol === pos.symbol);
                             const fillsHtml = symbolFills.length > 0 ? symbolFills.map(f => {
@@ -147,12 +138,12 @@
                                             <span class="position-stat-value">$${(Math.abs(pos.size) * pos.entry_price).toFixed(2)}</span>
                                         </div>
                                         <div class="position-stat">
-                                            <span class="position-stat-label" style="color:var(--profit);">TP (+12%)</span>
-                                            <span class="position-stat-value" style="color:var(--profit);">$${tpPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: tpPrice < 10 ? 4 : 2})}</span>
+                                            <span class="position-stat-label" style="color:var(--profit);">TP ${tpPct ? '(+' + tpPct + '%)' : '(Not Set)'}</span>
+                                            <span class="position-stat-value" style="color:var(--profit);">${tpPrice ? '$' + tpPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: tpPrice < 10 ? 4 : 2}) : '--'}</span>
                                         </div>
                                         <div class="position-stat">
-                                            <span class="position-stat-label" style="color:var(--loss);">SL (-5%)</span>
-                                            <span class="position-stat-value" style="color:var(--loss);">$${slPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: slPrice < 10 ? 4 : 2})}</span>
+                                            <span class="position-stat-label" style="color:var(--loss);">SL ${slPct ? '(-' + slPct + '%)' : '(Not Set)'}</span>
+                                            <span class="position-stat-value" style="color:var(--loss);">${slPrice ? '$' + slPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: slPrice < 10 ? 4 : 2}) : '--'}</span>
                                         </div>
                                     </div>
                                     ${symbolFills.length > 0 ? '<div style="margin-top:8px;border-top:1px solid #1a1a2e;padding-top:8px;"><span style="font-size:10px;color:#666;">Individual Buys:</span>' + fillsHtml + '</div>' : ''}
@@ -173,8 +164,8 @@
                     }
                 }
 
-                // Update settings
-                if (data.settings && !document.activeElement.className.includes('setting-input')) {
+                // Update settings (skip if saving or user is editing)
+                if (data.settings && !isSaving && !document.activeElement.className.includes('setting-input')) {
                     currentSettings = data.settings;
                     ['leverage', 'max_position_pct', 'stop_loss', 'take_profit', 'sleep_minutes'].forEach(key => {
                         const input = document.getElementById('setting-' + key);
@@ -238,21 +229,27 @@
         }
 
         async function saveSettings() {
+            isSaving = true;
             showStatus('Saving...', '');
             try {
-                const settings = ['leverage', 'max_position_pct', 'stop_loss', 'take_profit', 'sleep_minutes'];
-                for (const s of settings) {
-                    const value = document.getElementById('setting-' + s).value;
+                // Read all values upfront to prevent race condition with fetchData
+                const settingsToSave = {};
+                ['leverage', 'max_position_pct', 'stop_loss', 'take_profit', 'sleep_minutes'].forEach(s => {
+                    settingsToSave[s] = document.getElementById('setting-' + s).value;
+                });
+                const confidence = document.getElementById('setting-min_confidence').value;
+
+                // Now save them
+                for (const [s, value] of Object.entries(settingsToSave)) {
                     await fetch('/api/setting/' + s + '/' + value, { method: 'POST' });
                 }
-                // Save confidence threshold
-                const confidence = document.getElementById('setting-min_confidence').value;
                 await fetch('/api/confidence/' + confidence, { method: 'POST' });
                 showStatus('Settings saved! Min confidence: ' + confidence + '%', 'success');
                 await fetch('/api/restart', { method: 'POST' });
-                setTimeout(fetchData, 2000);
+                setTimeout(() => { isSaving = false; fetchData(); }, 2000);
             } catch (error) {
                 showStatus('Error: ' + error.message, 'error');
+                isSaving = false;
             }
         }
 

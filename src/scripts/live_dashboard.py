@@ -172,6 +172,27 @@ def get_account_info():
         account_value = float(margin_summary.get("accountValue", 0))
         withdrawable = float(margin_summary.get("withdrawable", 0))
 
+        # Get all open orders including trigger orders (TP/SL)
+        try:
+            frontend_orders = info.frontend_open_orders(account.address)
+        except:
+            frontend_orders = []
+
+        # Build a map of TP/SL orders by symbol
+        tpsl_by_symbol = {}
+        for order in frontend_orders:
+            coin = order.get('coin', '')
+            order_type = order.get('orderType', '')
+            trigger_px = order.get('triggerPx', '')
+
+            if coin not in tpsl_by_symbol:
+                tpsl_by_symbol[coin] = {'tp': None, 'sl': None, 'tp_pct': None, 'sl_pct': None}
+
+            if 'Take Profit' in order_type:
+                tpsl_by_symbol[coin]['tp'] = float(trigger_px) if trigger_px else None
+            elif 'Stop' in order_type:
+                tpsl_by_symbol[coin]['sl'] = float(trigger_px) if trigger_px else None
+
         # Calculate total unrealized P/L from positions
         total_unrealized_pnl = 0
         positions = []
@@ -181,14 +202,46 @@ def get_account_info():
             if size != 0:
                 unrealized = float(position.get("unrealizedPnl", 0))
                 total_unrealized_pnl += unrealized
+                symbol = position.get("coin", "")
+                entry_price = float(position.get("entryPx", 0))
+                is_long = size > 0
+
+                # Get TP/SL for this position
+                tpsl = tpsl_by_symbol.get(symbol, {'tp': None, 'sl': None})
+                tp_price = tpsl.get('tp')
+                sl_price = tpsl.get('sl')
+
+                # Calculate TP/SL percentages from entry
+                tp_pct = None
+                sl_pct = None
+                if entry_price > 0:
+                    if tp_price:
+                        if is_long:
+                            tp_pct = ((tp_price - entry_price) / entry_price) * 100
+                        else:
+                            tp_pct = ((entry_price - tp_price) / entry_price) * 100
+                    if sl_price:
+                        if is_long:
+                            sl_pct = ((entry_price - sl_price) / entry_price) * 100
+                        else:
+                            sl_pct = ((sl_price - entry_price) / entry_price) * 100
+
+                # Calculate actual P/L percentage (price change, not leveraged ROE)
+                position_value = abs(size) * entry_price
+                pnl_percent = (unrealized / position_value) * 100 if position_value > 0 else 0
+
                 positions.append({
-                    "symbol": position.get("coin", ""),
+                    "symbol": symbol,
                     "size": size,
-                    "entry_price": float(position.get("entryPx", 0)),
-                    "pnl_percent": float(position.get("returnOnEquity", 0)) * 100,
+                    "entry_price": entry_price,
+                    "pnl_percent": pnl_percent,
                     "unrealized_pnl": unrealized,
-                    "side": "LONG" if size > 0 else "SHORT",
-                    "leverage": position.get("leverage", {}).get("value", "-")
+                    "side": "LONG" if is_long else "SHORT",
+                    "leverage": position.get("leverage", {}).get("value", "-"),
+                    "tp_price": tp_price,
+                    "sl_price": sl_price,
+                    "tp_pct": round(tp_pct, 1) if tp_pct else None,
+                    "sl_pct": round(sl_pct, 1) if sl_pct else None
                 })
 
         # equity = total account value (includes unrealized P/L)
@@ -876,13 +929,28 @@ async def force_buy(symbol: str):
             if fill_qty > 0 and fill_price > 0:
                 save_trade_fill(symbol, fill_qty, fill_price, "BUY")
 
+            # Read TP/SL settings from trading_agent.py
+            tp_pct = 10.0  # Default
+            sl_pct = 5.0   # Default
+            try:
+                with open(TRADING_AGENT_FILE, 'r') as f:
+                    content = f.read()
+                    tp_match = re.search(r'TAKE_PROFIT_PERCENTAGE\s*=\s*([\d.]+)', content)
+                    sl_match = re.search(r'STOP_LOSS_PERCENTAGE\s*=\s*([\d.]+)', content)
+                    if tp_match:
+                        tp_pct = float(tp_match.group(1))
+                    if sl_match:
+                        sl_pct = float(sl_match.group(1))
+            except:
+                pass
+
             # Set TP/SL
             import time
             time.sleep(2)
             positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(symbol, account)
             if im_in_pos and entry_px:
-                n.place_tp_sl_orders(symbol, float(entry_px), abs(float(pos_size)), True, 12, 5, account)
-            return {"success": True, "message": f"Bought {fill_qty:.5f} {symbol} @ ${fill_price:,.2f}"}
+                n.place_tp_sl_orders(symbol, float(entry_px), abs(float(pos_size)), True, tp_pct, sl_pct, account)
+            return {"success": True, "message": f"Bought {fill_qty:.5f} {symbol} @ ${fill_price:,.2f} (TP: +{tp_pct}%, SL: -{sl_pct}%)"}
         else:
             return {"success": False, "message": f"Buy failed: {result}"}
 
