@@ -823,9 +823,16 @@ async def get_trade_analysis():
 async def clear_trade_analysis():
     """Clear all trade analysis"""
     try:
+        # Clear trade_analysis.json
         analysis_file = PROJECT_ROOT / "src" / "data" / "trade_analysis.json"
         with open(analysis_file, 'w') as f:
             json.dump({"trades": []}, f, indent=4)
+
+        # Also clear analysis_reports.json
+        reports_file = PROJECT_ROOT / "src" / "data" / "analysis_reports.json"
+        with open(reports_file, 'w') as f:
+            json.dump({}, f, indent=4)
+
         return {"success": True, "message": "Trade analysis cleared"}
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -1204,6 +1211,53 @@ async def set_all_tpsl():
             return {"success": True, "message": f"Updated: {', '.join(positions_updated)}"}
         else:
             return {"success": False, "message": "No open positions"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+@app.post("/api/cancel-duplicate-orders")
+async def cancel_duplicate_orders():
+    """Cancel duplicate TP/SL orders, keeping only 2 most recent per symbol"""
+    try:
+        if not HYPERLIQUID_AVAILABLE:
+            return {"success": False, "message": "HyperLiquid SDK not available"}
+
+        account = get_hyperliquid_account()
+        if not account:
+            return {"success": False, "message": "No account configured"}
+
+        info = Info(constants.MAINNET_API_URL, skip_ws=True)
+        exchange = Exchange(account, constants.MAINNET_API_URL)
+
+        # Get all open orders
+        open_orders = info.open_orders(account.address)
+
+        # Group orders by symbol
+        from collections import defaultdict
+        orders_by_symbol = defaultdict(list)
+        for order in open_orders:
+            orders_by_symbol[order['coin']].append(order)
+
+        # Keep only 2 most recent per symbol, cancel the rest
+        orders_to_cancel = []
+        for symbol, orders in orders_by_symbol.items():
+            sorted_orders = sorted(orders, key=lambda x: int(x['oid']), reverse=True)
+            if len(sorted_orders) > 2:
+                orders_to_cancel.extend(sorted_orders[2:])
+
+        if not orders_to_cancel:
+            return {"success": True, "message": f"No duplicates found ({len(open_orders)} orders, all correct)"}
+
+        # Cancel duplicates
+        cancelled = 0
+        for order in orders_to_cancel:
+            try:
+                exchange.cancel(order['coin'], order['oid'])
+                cancelled += 1
+            except Exception:
+                pass
+
+        remaining = len(open_orders) - cancelled
+        return {"success": True, "message": f"Cancelled {cancelled} duplicates. {remaining} orders remaining."}
     except Exception as e:
         return {"success": False, "message": str(e)}
 

@@ -108,7 +108,7 @@ LONG_ONLY = False  # False = Allow both Long & Short positions (HyperLiquid)
 
 # 🤖 SINGLE MODEL SETTINGS (only used when USE_SWARM_MODE = False)
 AI_MODEL_TYPE = 'xai'  # Options: 'groq', 'openai', 'claude', 'deepseek', 'xai', 'ollama', 'gemini'
-AI_MODEL_NAME = 'grok-2'   # Grok 2 - xAI's powerful reasoning model
+AI_MODEL_NAME = 'grok-4-fast-reasoning'   # xAI Grok 4 - 2M context, no rate limits
 AI_TEMPERATURE = 0.7   # Creativity vs precision (0-1)
 AI_MAX_TOKENS = 4096   # Max tokens for AI response (increased for Claude)
 
@@ -116,7 +116,7 @@ AI_MAX_TOKENS = 4096   # Max tokens for AI response (increased for Claude)
 USE_PORTFOLIO_ALLOCATION = False # True = Use AI for portfolio allocation across multiple tokens
                                  # False = Simple mode - trade single token at MAX_POSITION_PERCENTAGE
 
-MAX_POSITION_PERCENTAGE = 20     # % of account balance to use as MARGIN per position (0-100)
+MAX_POSITION_PERCENTAGE = 80     # % of account balance to use as MARGIN per position (0-100)
                                  # How it works per exchange:
                                  # - ASTER/HYPERLIQUID: % of balance used as MARGIN (then multiplied by leverage)
                                  #   Example: $100 balance, 90% = $90 margin
@@ -124,7 +124,7 @@ MAX_POSITION_PERCENTAGE = 20     # % of account balance to use as MARGIN per pos
                                  # - SOLANA: Uses % of USDC balance directly (no leverage)
                                  #   Example: 100 USDC, 90% = 90 USDC position
 
-LEVERAGE = 3                    # Leverage multiplier (1-50x on HyperLiquid)
+LEVERAGE = 20                    # Leverage multiplier (1-50x on HyperLiquid)
                                  # Higher leverage = bigger position with same margin, higher liquidation risk
                                  # Examples with $100 margin:
                                  #           5x = $100 margin → $500 notional position
@@ -133,8 +133,8 @@ LEVERAGE = 3                    # Leverage multiplier (1-50x on HyperLiquid)
                                  # Note: Only applies to Aster and HyperLiquid (ignored on Solana)
 
 # Stop Loss & Take Profit
-STOP_LOSS_PERCENTAGE = 5.0       # % loss to trigger stop loss exit (e.g., 5.0 = -5%)
-TAKE_PROFIT_PERCENTAGE = 12.0    # % gain to trigger take profit exit (e.g., 12.0 = +12%)
+STOP_LOSS_PERCENTAGE = 3.0       # % loss to trigger stop loss exit (e.g., 5.0 = -5%)
+TAKE_PROFIT_PERCENTAGE = 10.0    # % gain to trigger take profit exit (e.g., 12.0 = +12%)
 PNL_CHECK_INTERVAL = 5           # Seconds between P&L checks when position is open
 
 # Trailing Stop Loss
@@ -145,6 +145,12 @@ TRAILING_STOP_DISTANCE = 2.0     # Trail this % behind highest price
 # Confidence Threshold
 MIN_CONFIDENCE_TO_TRADE = 70     # Only trade when AI confidence >= this % (0-100)
                                  # Higher = fewer but higher quality trades
+
+# 🔄 REVERSAL PROTECTION (prevent costly flip-flopping)
+REVERSAL_CONFIRMATIONS_REQUIRED = 2  # Number of consecutive signals needed to reverse
+                                      # 2 = need 2 SELL signals in a row to reverse LONG to SHORT
+REVERSAL_MIN_CONFIDENCE = 75          # Minimum confidence required for reversals (higher than normal)
+                                      # Reversals are expensive (2x fees), so require stronger signal
 
 # 🎯 DYNAMIC POSITION SIZING (based on AI confidence)
 USE_DYNAMIC_SIZING = True        # True = Scale position size by confidence
@@ -179,11 +185,11 @@ INDICATORS = {
     "volume": True,           # Volume
     # Additional Indicators
     "atr": True,              # ATR - Volatility/Stop placement
-    "stochastic": False,       # Stochastic - Overbought/Oversold
+    "stochastic": True,       # Stochastic - Overbought/Oversold
     "adx": True,              # ADX - Trend strength
-    "cci": False,              # CCI - Trend/Reversals
-    "williams_r": False,       # Williams %R - Momentum
-    "obv": False,              # OBV - Volume confirmation (calculated but not shown)
+    "cci": True,              # CCI - Trend/Reversals
+    "williams_r": True,       # Williams %R - Momentum
+    "obv": True,              # OBV - Volume confirmation (calculated but not shown)
     "fibonacci": True,        # Fibonacci Retracement - Support/Resistance
     # Pattern Analysis
     "golden_cross": True,     # Golden Cross / Death Cross (MA20 vs MA200)
@@ -192,6 +198,29 @@ INDICATORS = {
 # ⚡ TRADING EXECUTION SETTINGS
 slippage = 199                   # Slippage tolerance (199 = ~2%)
 SLEEP_BETWEEN_RUNS_MINUTES = 30  # Minutes between trading cycles
+
+# 🔄 REVERSAL SIGNAL TRACKING (tracks consecutive reversal signals per token)
+# Format: {"BTC": {"direction": "SHORT", "count": 2, "last_confidence": 75}, ...}
+reversal_signals = {}
+
+# 🔄 SCAN INTERVAL PRESETS
+# Each preset has: (scan_minutes, timeframe, description)
+SCAN_PRESETS = {
+    "scalp": (5, "15m", "Scalping - High volatility, quick entries/exits"),
+    "active": (15, "1H", "Active Trading - Moderate volatility, intraday moves"),
+    "standard": (30, "1H", "Standard - Normal conditions, balanced approach"),
+    "swing": (60, "4H", "Swing Trading - Lower volatility, bigger moves"),
+    "patient": (120, "4H", "Patient - Calm markets, wait for clear setups"),
+}
+CURRENT_SCAN_PRESET = "standard"  # Default preset
+
+# 🤖 AUTO-ADJUST SCAN INTERVAL
+AUTO_ADJUST_INTERVAL = True      # Auto-switch based on volatility
+VOLATILITY_THRESHOLDS = {
+    "high": 3.0,    # ATR% > 3.0 = high volatility → faster scans (scalp/active)
+    "medium": 1.5,  # ATR% 1.5-3.0 = medium → standard scans
+    "low": 1.5,     # ATR% < 1.5 = low volatility → slower scans (swing/patient)
+}
 
 # 🎯 TOKEN CONFIGURATION
 
@@ -214,8 +243,8 @@ MONITORED_TOKENS = [
 SYMBOLS_CONFIG = {
     # All verified available on HyperLiquid
     'BTC': True,       # Bitcoin
-    'ETH': True,       # Ethereum
-    'SOL': True,       # Solana
+    'ETH': False,       # Ethereum
+    'SOL': False,       # Solana
     'DOGE': True,      # Dogecoin
     'XRP': True,       # Ripple
     'HBAR': False,     # Hedera
@@ -243,6 +272,173 @@ SYMBOLS = [sym for sym, enabled in SYMBOLS_CONFIG.items() if enabled]
 # ============================================================================
 # END CONFIGURATION - CODE BELOW
 # ============================================================================
+
+# 🎛️ DYNAMIC SETTINGS LOADER
+import json
+from pathlib import Path
+
+SETTINGS_FILE = Path(__file__).parent.parent / "data" / "dashboard_settings.json"
+
+def get_min_confidence():
+    """Read min confidence from dashboard settings file (allows live updates)"""
+    try:
+        if SETTINGS_FILE.exists():
+            with open(SETTINGS_FILE, 'r') as f:
+                settings = json.load(f)
+                return settings.get('min_confidence', MIN_CONFIDENCE_TO_TRADE)
+    except Exception as e:
+        print(f"⚠️ Could not read settings file: {e}")
+    return MIN_CONFIDENCE_TO_TRADE
+
+TRADE_ANALYSIS_FILE = Path(__file__).parent.parent / "data" / "trade_analysis.json"
+
+def save_trade_analysis(symbol, action, confidence, entry_price, reasoning):
+    """Save trade analysis to file for dashboard display"""
+    try:
+        from datetime import datetime
+
+        # Load existing trades
+        trades = []
+        if TRADE_ANALYSIS_FILE.exists():
+            with open(TRADE_ANALYSIS_FILE, 'r') as f:
+                data = json.load(f)
+                trades = data.get('trades', [])
+
+        # Add new trade (limit to last 10)
+        trades.insert(0, {
+            "symbol": symbol,
+            "action": action,
+            "confidence": confidence,
+            "entry_price": round(entry_price, 2) if entry_price else 0,
+            "reasoning": reasoning[:500] if reasoning else "No analysis available",  # Truncate long analysis
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
+        })
+        trades = trades[:10]  # Keep only last 10 trades
+
+        # Save
+        with open(TRADE_ANALYSIS_FILE, 'w') as f:
+            json.dump({"trades": trades}, f, indent=4)
+
+        print(f"📝 Trade analysis saved for {symbol}")
+    except Exception as e:
+        print(f"⚠️ Could not save trade analysis: {e}")
+
+# Analysis reports file for dashboard watchlist
+ANALYSIS_REPORTS_FILE = Path(__file__).parent.parent / "data" / "analysis_reports.json"
+
+# Trading goals file
+TRADING_GOALS_FILE = Path(__file__).parent.parent / "data" / "trading_goals.json"
+
+def load_trading_goals():
+    """Load trading goals from JSON file"""
+    try:
+        if TRADING_GOALS_FILE.exists():
+            with open(TRADING_GOALS_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"⚠️ Could not load trading goals: {e}")
+    return {}
+
+def get_goals_context():
+    """Format trading goals for AI prompt context"""
+    goals = load_trading_goals()
+    if not goals:
+        return ""
+
+    context = "\n\nTRADING GOALS (User-defined objectives to consider):\n"
+    if goals.get('daily_profit_target'):
+        context += f"- Daily profit target: ${goals['daily_profit_target']}\n"
+    if goals.get('weekly_profit_target'):
+        context += f"- Weekly profit target: ${goals['weekly_profit_target']}\n"
+    if goals.get('max_daily_loss'):
+        context += f"- Maximum daily loss limit: ${goals['max_daily_loss']}\n"
+    if goals.get('target_account_balance'):
+        context += f"- Target account balance: ${goals['target_account_balance']}\n"
+    if goals.get('risk_per_trade_percent'):
+        context += f"- Risk per trade: {goals['risk_per_trade_percent']}%\n"
+    if goals.get('preferred_strategy'):
+        strategy = goals['preferred_strategy']
+        if strategy == 'conservative':
+            context += "- Strategy: CONSERVATIVE (prioritize capital preservation, fewer trades, higher confidence required)\n"
+        elif strategy == 'moderate':
+            context += "- Strategy: MODERATE (balanced approach between risk and reward)\n"
+        elif strategy == 'aggressive':
+            context += "- Strategy: AGGRESSIVE (accept higher risk for higher potential gains)\n"
+    if goals.get('custom_goal'):
+        context += f"- Custom goal: {goals['custom_goal']}\n"
+
+    return context
+
+def save_analysis_report(symbol, action, confidence, reasoning):
+    """Save analysis report for dashboard watchlist display"""
+    try:
+        from datetime import datetime
+
+        # Load existing reports
+        reports = {}
+        if ANALYSIS_REPORTS_FILE.exists():
+            with open(ANALYSIS_REPORTS_FILE, 'r') as f:
+                reports = json.load(f)
+
+        # Update/add report for this symbol
+        reports[symbol] = {
+            "action": action,
+            "confidence": confidence,
+            "analysis": reasoning[:1500] if reasoning else "No analysis available",
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        # Save
+        with open(ANALYSIS_REPORTS_FILE, 'w') as f:
+            json.dump(reports, f, indent=4)
+
+    except Exception as e:
+        print(f"⚠️ Could not save analysis report: {e}")
+
+def play_trade_sound(sound_type="open", pnl=None):
+    """Play audible notification for trade events"""
+    try:
+        import subprocess
+        import platform
+
+        if platform.system() == "Darwin":  # macOS
+            if sound_type == "open":
+                # Play a pleasant chime for position opened
+                subprocess.Popen(["afplay", "/System/Library/Sounds/Glass.aiff"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen(["say", "-v", "Samantha", "Position opened"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif sound_type == "close_profit":
+                # Winning trade - happy sound!
+                subprocess.Popen(["afplay", "/System/Library/Sounds/Hero.aiff"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if pnl:
+                    subprocess.Popen(["say", "-v", "Samantha", f"Winner! Made {abs(pnl):.0f} dollars"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    subprocess.Popen(["say", "-v", "Samantha", "Position closed with profit"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif sound_type == "close_loss":
+                # Losing trade - somber sound
+                subprocess.Popen(["afplay", "/System/Library/Sounds/Basso.aiff"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if pnl:
+                    subprocess.Popen(["say", "-v", "Samantha", f"Loss of {abs(pnl):.0f} dollars"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    subprocess.Popen(["say", "-v", "Samantha", "Position closed with loss"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif sound_type == "alert":
+                subprocess.Popen(["afplay", "/System/Library/Sounds/Ping.aiff"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif platform.system() == "Linux":  # Raspberry Pi / Linux
+            try:
+                subprocess.Popen(["aplay", "-q", "/usr/share/sounds/alsa/Front_Center.wav"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except:
+                pass
+    except Exception as e:
+        pass  # Silently fail if sound can't play
 
 # Keep only these prompts
 TRADING_PROMPT = """
@@ -367,6 +563,35 @@ if EXCHANGE == "HYPERLIQUID":
         cprint(f"❌ Failed to initialize HyperLiquid account: {e}", "red")
 
 # ============================================================================
+# TRADE FILL TRACKING
+# ============================================================================
+
+TRADE_FILLS_FILE = Path(__file__).parent.parent / "data" / "trade_fills.json"
+
+def save_trade_fill(symbol, qty, price, side="BUY"):
+    """Save individual trade fill to history (shared with dashboard)"""
+    try:
+        fills = {"fills": []}
+        if TRADE_FILLS_FILE.exists():
+            with open(TRADE_FILLS_FILE, 'r') as f:
+                fills = json.load(f)
+
+        fills["fills"].append({
+            "symbol": symbol,
+            "qty": qty,
+            "price": price,
+            "side": side,
+            "timestamp": datetime.now().isoformat(),
+            "value": qty * price
+        })
+
+        with open(TRADE_FILLS_FILE, 'w') as f:
+            json.dump(fills, f, indent=4)
+        cprint(f"📝 Trade fill saved: {qty} {symbol} @ ${price:,.2f}", "cyan")
+    except Exception as e:
+        cprint(f"⚠️ Error saving trade fill: {e}", "yellow")
+
+# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
@@ -465,12 +690,11 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
 
                     # Close position using limit sell (for longs) or limit buy (for shorts)
                     if position['position_amount'] > 0:
-                        # Long position - use limit_sell
                         n.limit_sell(token, position_size, slippage=0, leverage=LEVERAGE)
                     else:
-                        # Short position - use limit_buy
                         n.limit_buy(token, position_size, slippage=0, leverage=LEVERAGE)
 
+                    play_trade_sound("close_loss", pnl_usd)  # 🔊 Stop loss sound
                     return True
 
                 # Check take profit
@@ -480,12 +704,11 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
 
                     # Close position using limit sell (for longs) or limit buy (for shorts)
                     if position['position_amount'] > 0:
-                        # Long position - use limit_sell
                         n.limit_sell(token, position_size, slippage=0, leverage=LEVERAGE)
                     else:
-                        # Short position - use limit_buy
                         n.limit_buy(token, position_size, slippage=0, leverage=LEVERAGE)
 
+                    play_trade_sound("close_profit", pnl_usd)  # 🔊 Take profit sound
                     return True
 
             # Sleep before next check
@@ -545,8 +768,9 @@ def calculate_position_size(account_balance, confidence=None):
         # Scale position size linearly between MIN and MAX based on confidence
         # At MIN_CONFIDENCE_TO_TRADE -> DYNAMIC_SIZE_MIN_PCT
         # At 100% confidence -> DYNAMIC_SIZE_MAX_PCT
-        confidence_range = 100 - MIN_CONFIDENCE_TO_TRADE  # e.g., 100 - 70 = 30
-        confidence_above_min = confidence - MIN_CONFIDENCE_TO_TRADE  # e.g., 85 - 70 = 15
+        min_conf = get_min_confidence()
+        confidence_range = 100 - min_conf  # e.g., 100 - 70 = 30
+        confidence_above_min = confidence - min_conf  # e.g., 85 - 70 = 15
         confidence_ratio = max(0, min(1, confidence_above_min / confidence_range))  # 0 to 1
 
         position_pct = DYNAMIC_SIZE_MIN_PCT + (DYNAMIC_SIZE_MAX_PCT - DYNAMIC_SIZE_MIN_PCT) * confidence_ratio
@@ -991,6 +1215,12 @@ ANALYSIS TIMESTAMP: {market_data.iloc[-1].get('timestamp', 'N/A')}
                 # Format market data for swarm
                 formatted_data = self._format_market_data_for_swarm(token, market_data)
 
+                # Add trading goals context
+                goals_context = get_goals_context()
+                if goals_context:
+                    formatted_data += goals_context
+                    cprint("📋 Trading goals included in analysis", "cyan")
+
                 # Query the swarm (takes ~45-60 seconds)
                 swarm_result = self.swarm.query(
                     prompt=formatted_data,
@@ -1015,6 +1245,9 @@ ANALYSIS TIMESTAMP: {market_data.iloc[-1].get('timestamp', 'N/A')}
                     }])
                 ], ignore_index=True)
 
+                # Save analysis report for dashboard watchlist
+                save_analysis_report(token, action, confidence, reasoning)
+
                 cprint(f"✅ Swarm analysis complete for {token[:8]}!", "green")
                 return swarm_result
 
@@ -1032,6 +1265,12 @@ Strategy Signals Available:
 
                 # Format market data with indicator summary (same as swarm mode)
                 formatted_data = self._format_market_data_for_swarm(token, market_data)
+
+                # Add trading goals context
+                goals_context = get_goals_context()
+                if goals_context:
+                    formatted_data += goals_context
+                    cprint("📋 Trading goals included in analysis", "cyan")
 
                 # Call AI model via model factory
                 response = self.chat_with_ai(
@@ -1073,6 +1312,9 @@ Strategy Signals Available:
                         'reasoning': reasoning
                     }])
                 ], ignore_index=True)
+
+                # Save analysis report for dashboard watchlist
+                save_analysis_report(token, action, confidence, reasoning)
 
                 print(f"🎯 Moon Dev's AI Analysis Complete for {token[:4]}!")
                 return response
@@ -1254,33 +1496,234 @@ Example format:
             cprint(f"💼 Current Position: ${current_position:.2f}", "white")
             cprint(f"{'='*60}", "cyan")
 
-            # Check confidence threshold for new positions
+            # Check confidence threshold for ALL trades (new positions AND adding to positions)
             confidence = row['confidence']
-            if current_position == 0 and action in ["BUY", "SELL"] and confidence < MIN_CONFIDENCE_TO_TRADE:
-                cprint(f"⚠️  Confidence {confidence}% < {MIN_CONFIDENCE_TO_TRADE}% threshold - SKIPPING TRADE", "yellow", attrs=['bold'])
+            min_conf = get_min_confidence()
+            if action in ["BUY", "SELL"] and confidence < min_conf:
+                cprint(f"⚠️  Confidence {confidence}% < {min_conf}% threshold - SKIPPING TRADE", "yellow", attrs=['bold'])
                 cprint(f"📊 Waiting for higher confidence signal...", "cyan")
                 continue
 
             if current_position > 0:
-                # We have a position - take action based on signal
-                if action == "SELL":
-                    cprint(f"🚨 SELL signal with position - CLOSING POSITION", "white", "on_red")
+                # We have a position - check if we need to REVERSE
+                # Get current position direction for HyperLiquid
+                current_is_long = True  # Default for non-HL exchanges
+                if EXCHANGE == "HYPERLIQUID":
+                    positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, current_is_long = n.get_position(token, HL_ACCOUNT)
+
+                # Check for REVERSAL conditions:
+                # - We're SHORT and get BUY signal → reverse to LONG
+                # - We're LONG and get SELL signal → reverse to SHORT (if not LONG_ONLY)
+                # IMPORTANT: Require multiple confirmations to prevent costly flip-flopping
+                need_reverse = False
+                reverse_to_long = False
+                potential_reversal_direction = None
+
+                if not current_is_long and action == "BUY":
+                    potential_reversal_direction = "LONG"
+                elif current_is_long and action == "SELL" and not LONG_ONLY:
+                    potential_reversal_direction = "SHORT"
+
+                # Track reversal signals and require confirmations
+                if potential_reversal_direction:
+                    global reversal_signals
+
+                    # Initialize tracking for this token if not exists
+                    if token not in reversal_signals:
+                        reversal_signals[token] = {"direction": None, "count": 0, "confidences": []}
+
+                    # Check if this continues the same reversal direction or resets
+                    if reversal_signals[token]["direction"] == potential_reversal_direction:
+                        # Same direction - increment count
+                        reversal_signals[token]["count"] += 1
+                        reversal_signals[token]["confidences"].append(confidence)
+                    else:
+                        # Different direction - reset counter
+                        reversal_signals[token] = {
+                            "direction": potential_reversal_direction,
+                            "count": 1,
+                            "confidences": [confidence]
+                        }
+
+                    signal_count = reversal_signals[token]["count"]
+                    avg_confidence = sum(reversal_signals[token]["confidences"]) / len(reversal_signals[token]["confidences"])
+
+                    cprint(f"🔄 REVERSAL SIGNAL {signal_count}/{REVERSAL_CONFIRMATIONS_REQUIRED}: {potential_reversal_direction}", "yellow", attrs=['bold'])
+                    cprint(f"   Avg Confidence: {avg_confidence:.1f}% (need {REVERSAL_MIN_CONFIDENCE}%)", "cyan")
+
+                    # Check if we have enough confirmations AND confidence
+                    if signal_count >= REVERSAL_CONFIRMATIONS_REQUIRED and avg_confidence >= REVERSAL_MIN_CONFIDENCE:
+                        need_reverse = True
+                        reverse_to_long = (potential_reversal_direction == "LONG")
+                        cprint(f"✅ REVERSAL CONFIRMED! {signal_count} signals, {avg_confidence:.1f}% avg confidence", "white", "on_magenta", attrs=['bold'])
+                        # Reset the counter after executing
+                        reversal_signals[token] = {"direction": None, "count": 0, "confidences": []}
+                    elif signal_count < REVERSAL_CONFIRMATIONS_REQUIRED:
+                        cprint(f"⏳ Waiting for {REVERSAL_CONFIRMATIONS_REQUIRED - signal_count} more confirmation(s)...", "yellow")
+                    else:
+                        cprint(f"⚠️ Confidence too low ({avg_confidence:.1f}% < {REVERSAL_MIN_CONFIDENCE}%) - waiting for stronger signal", "yellow")
+                else:
+                    # Not a reversal signal - reset the counter for this token
+                    if token in reversal_signals:
+                        reversal_signals[token] = {"direction": None, "count": 0, "confidences": []}
+
+                if need_reverse and EXCHANGE == "HYPERLIQUID":
                     try:
+                        # Step 1: Close current position
+                        close_pnl = float(positions[0].get('position', {}).get('unrealizedPnl', 0)) if positions else 0
+                        cprint(f"📉 Step 1: Closing {'SHORT' if not current_is_long else 'LONG'} position...", "yellow")
+                        n.kill_switch(token, HL_ACCOUNT)
+
+                        # Play close sound
+                        if close_pnl >= 0:
+                            play_trade_sound("close_profit", close_pnl)
+                        else:
+                            play_trade_sound("close_loss", close_pnl)
+
+                        # Clear old fills for this symbol
+                        from pathlib import Path
+                        fills_file = Path(__file__).parent.parent / "data" / "trade_fills.json"
+                        if fills_file.exists():
+                            import json
+                            with open(fills_file, 'r') as f:
+                                data = json.load(f)
+                            data["fills"] = [f for f in data.get("fills", []) if f.get("symbol") != token]
+                            with open(fills_file, 'w') as f:
+                                json.dump(data, f, indent=4)
+
+                        cprint(f"✅ Position closed!", "green")
+                        time.sleep(2)  # Wait for position to settle
+
+                        # Step 2: Open opposite position
+                        account_balance = get_account_balance()
+                        position_size = calculate_position_size(account_balance, confidence)
+
+                        if reverse_to_long:
+                            cprint(f"📈 Step 2: Opening LONG position (${position_size:.2f})...", "green")
+                            n.ai_entry(token, position_size, leverage=LEVERAGE)
+                        else:
+                            cprint(f"📉 Step 2: Opening SHORT position (${position_size:.2f})...", "red")
+                            if hasattr(n, 'open_short'):
+                                n.open_short(token, position_size, slippage, leverage=LEVERAGE)
+                            else:
+                                n.market_sell(token, position_size, slippage, leverage=LEVERAGE)
+
+                        # CRITICAL: Verify the position actually opened in the correct direction
+                        time.sleep(2)  # Wait for position to settle
+                        positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(token, HL_ACCOUNT)
+
+                        # Verify position exists AND is in the expected direction
+                        position_verified = False
+                        if im_in_pos:
+                            expected_direction = reverse_to_long  # True = LONG, False = SHORT
+                            if is_long == expected_direction:
+                                position_verified = True
+                                cprint(f"✅ REVERSAL COMPLETE! Now {'LONG' if reverse_to_long else 'SHORT'}", "white", "on_green", attrs=['bold'])
+                            else:
+                                cprint(f"⚠️ Position direction mismatch! Expected {'LONG' if reverse_to_long else 'SHORT'}, got {'LONG' if is_long else 'SHORT'}", "white", "on_red")
+                        else:
+                            cprint(f"❌ REVERSAL FAILED! Position did not open (IOC order may have been cancelled)", "white", "on_red")
+                            cprint(f"💡 Price may have moved too fast for IOC order to fill", "yellow")
+
+                        if position_verified:
+                            play_trade_sound("open")
+
+                            # Set TP/SL for new position (position already verified above)
+                            if entry_px:
+                                # Save trade fill
+                                mid_price = n.get_current_price(token)
+                                fill_qty = abs(float(pos_size))
+                                save_trade_fill(token, fill_qty, mid_price, "BUY" if reverse_to_long else "SELL")
+                                n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
+
+                                # Save detailed auto-reversal analysis
+                                original_reasoning = row.get('reasoning', 'No analysis available')
+                                pnl_str = f"+${close_pnl:.2f}" if close_pnl >= 0 else f"-${abs(close_pnl):.2f}"
+                                reversal_reasoning = (
+                                    f"🔄 AUTO-REVERSAL EXECUTED\n\n"
+                                    f"Previous Position: {'SHORT' if reverse_to_long else 'LONG'}\n"
+                                    f"Received Signal: {action} at {confidence}% confidence\n"
+                                    f"Closed PnL: {pnl_str}\n"
+                                    f"New Position: {'LONG' if reverse_to_long else 'SHORT'} @ ${entry_px:.2f}\n\n"
+                                    f"Why Reversal: Signal direction ({action}) conflicted with position direction "
+                                    f"({'SHORT' if reverse_to_long else 'LONG'}). Auto-reversal closed the existing "
+                                    f"position and opened opposite direction.\n\n"
+                                    f"Original Analysis:\n{original_reasoning[:300]}"
+                                )
+                                save_trade_analysis(token, f"REVERSE TO {'LONG' if reverse_to_long else 'SHORT'}", confidence, float(entry_px), reversal_reasoning)
+                    except Exception as e:
+                        cprint(f"❌ Error during reversal: {str(e)}", "white", "on_red")
+                    continue  # Move to next token after reversal
+
+                # Normal position handling (no reversal needed)
+                if action == "SELL":
+                    if current_is_long:
+                        cprint(f"🚨 SELL signal with LONG position - CLOSING POSITION", "white", "on_red")
+                    else:
+                        cprint(f"✅ SELL signal with SHORT position - HOLDING SHORT", "white", "on_green")
+                        cprint(f"💎 Maintaining ${current_position:.2f} short position", "cyan")
+                        continue
+                    try:
+                        # Get PnL before closing for sound notification
+                        close_pnl = 0
                         if EXCHANGE == "HYPERLIQUID":
+                            positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(token, HL_ACCOUNT)
+                            if im_in_pos:
+                                close_pnl = float(positions[0].get('position', {}).get('unrealizedPnl', 0)) if positions else 0
                             cprint(f"📉 Executing kill_switch for {token}...", "yellow")
                             n.kill_switch(token, HL_ACCOUNT)
                         else:
                             cprint(f"📉 Executing chunk_kill (${max_usd_order_size} chunks)...", "yellow")
                             n.chunk_kill(token, max_usd_order_size, slippage)
                         cprint(f"✅ Position closed successfully!", "white", "on_green")
+                        # Play sound based on profit/loss
+                        if close_pnl >= 0:
+                            play_trade_sound("close_profit", close_pnl)
+                        else:
+                            play_trade_sound("close_loss", close_pnl)
                     except Exception as e:
                         cprint(f"❌ Error closing position: {str(e)}", "white", "on_red")
                 elif action == "NOTHING":
                     cprint(f"⏸️  DO NOTHING signal - HOLDING POSITION", "white", "on_blue")
                     cprint(f"💎 Maintaining ${current_position:.2f} position", "cyan")
                 else:  # BUY
-                    cprint(f"✅ BUY signal - KEEPING POSITION", "white", "on_green")
-                    cprint(f"💎 Maintaining ${current_position:.2f} position", "cyan")
+                    # Check if we can add to position
+                    account_balance = get_account_balance()
+                    target_position = calculate_position_size(account_balance, confidence)
+                    max_position = account_balance * (MAX_POSITION_PERCENTAGE / 100)
+
+                    if current_position < max_position * 0.9:  # Allow adding if below 90% of max
+                        add_amount = min(target_position, max_position - current_position)
+                        if add_amount >= 10:  # Minimum $10 to add
+                            cprint(f"📈 BUY signal - ADDING TO POSITION", "white", "on_green")
+                            cprint(f"💰 Current: ${current_position:.2f} | Adding: ${add_amount:.2f}", "cyan")
+                            try:
+                                if EXCHANGE == "HYPERLIQUID":
+                                    success = n.ai_entry(token, add_amount, leverage=LEVERAGE)
+                                    if success:
+                                        cprint(f"✅ Added ${add_amount:.2f} to position!", "white", "on_green")
+                                        play_trade_sound("open")
+                                        # Update TP/SL for new position size
+                                        time.sleep(2)
+                                        positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(token, HL_ACCOUNT)
+                                        if im_in_pos and entry_px:
+                                            # Save trade fill for dashboard tracking
+                                            mid_price = n.get_current_price(token)
+                                            fill_qty = add_amount / mid_price if mid_price else 0
+                                            save_trade_fill(token, fill_qty, mid_price, "BUY")
+                                            # Save trade analysis with reasoning
+                                            reasoning = row.get('reasoning', 'No analysis available')
+                                            add_reasoning = f"📈 ADDING TO POSITION\n\nAdded: ${add_amount:.2f} to existing position\nNew Total Size: {abs(float(pos_size))} {token}\nEntry Price: ${entry_px:.4f}\nConfidence: {confidence}%\n\nOriginal Analysis:\n{reasoning[:500]}"
+                                            save_trade_analysis(token, "ADD TO POSITION", confidence, float(entry_px), add_reasoning)
+                                            n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
+                            except Exception as e:
+                                cprint(f"❌ Error adding to position: {str(e)}", "white", "on_red")
+                        else:
+                            cprint(f"✅ BUY signal - KEEPING POSITION (add amount too small)", "white", "on_green")
+                            cprint(f"💎 Maintaining ${current_position:.2f} position", "cyan")
+                    else:
+                        cprint(f"✅ BUY signal - AT MAX POSITION", "white", "on_green")
+                        cprint(f"💎 Maintaining ${current_position:.2f} / ${max_position:.2f} max", "cyan")
             else:
                 # No position - explain what this means
                 if action == "SELL":
@@ -1311,7 +1754,7 @@ Example format:
                                 time.sleep(2)  # Wait for position to settle
                                 positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(token, HL_ACCOUNT)
                                 if im_in_pos and entry_px:
-                                    n.place_tp_sl_orders(token, entry_px, abs(pos_size), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
+                                    n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
                         except Exception as e:
                             cprint(f"❌ Error opening short position: {str(e)}", "white", "on_red")
                 elif action == "NOTHING":
@@ -1336,6 +1779,7 @@ Example format:
 
                             if success:
                                 cprint(f"✅ Position opened successfully!", "white", "on_green")
+                                play_trade_sound("open")  # 🔊 Audible notification
 
                                 # Verify position was actually opened
                                 time.sleep(2)  # Brief delay for order to settle
@@ -1346,9 +1790,16 @@ Example format:
                                         position_usd = abs(float(pos_size)) * mid_price
                                         cprint(f"📊 Confirmed: ${position_usd:,.2f} position | P&L: {pnl_pct:+.2f}%", "green", attrs=['bold'])
 
+                                        # Save trade fill for dashboard tracking
+                                        save_trade_fill(token, abs(float(pos_size)), mid_price, "BUY")
+
                                         # Place TP/SL orders on HyperLiquid
                                         if entry_px:
-                                            n.place_tp_sl_orders(token, entry_px, abs(pos_size), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
+                                            n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
+
+                                        # Save trade analysis for dashboard
+                                        reasoning = row.get('reasoning', 'No analysis available')
+                                        save_trade_analysis(token, action, confidence, entry_px, reasoning)
                                     else:
                                         cprint(f"⚠️  Warning: Position verification failed - no position found!", "yellow")
                                 elif EXCHANGE == "ASTER":
@@ -1357,12 +1808,21 @@ Example format:
                                         pnl_pct = position.get('pnl_percentage', 0)
                                         position_usd = abs(position.get('position_amount', 0)) * position.get('mark_price', 0)
                                         cprint(f"📊 Confirmed: ${position_usd:,.2f} position | P&L: {pnl_pct:+.2f}%", "green", attrs=['bold'])
+
+                                        # Save trade analysis for dashboard
+                                        reasoning = row.get('reasoning', 'No analysis available')
+                                        entry_price = position.get('entry_price', 0)
+                                        save_trade_analysis(token, action, confidence, entry_price, reasoning)
                                     else:
                                         cprint(f"⚠️  Warning: Position verification failed - no position found!", "yellow")
                                 else:
                                     position_usd = n.get_token_balance_usd(token)
                                     if position_usd > 0:
                                         cprint(f"📊 Confirmed: ${position_usd:,.2f} position", "green", attrs=['bold'])
+
+                                        # Save trade analysis for dashboard
+                                        reasoning = row.get('reasoning', 'No analysis available')
+                                        save_trade_analysis(token, action, confidence, 0, reasoning)
                                     else:
                                         cprint(f"⚠️  Warning: Position verification failed - no position found!", "yellow")
                             else:
@@ -1550,12 +2010,75 @@ Example format:
             cprint(f"\n❌ Error in trading cycle: {str(e)}", "white", "on_red")
             cprint("🔧 Moon Dev suggests checking the logs and trying again!", "white", "on_blue")
 
+def get_market_volatility():
+    """Calculate current market volatility based on ATR%"""
+    try:
+        # Get BTC data as market proxy
+        if EXCHANGE == "HYPERLIQUID":
+            data = n.get_data("BTC", timeframe="1H", bars=20, add_indicators=True)
+        else:
+            return 2.0  # Default medium volatility for other exchanges
+
+        if data is None or data.empty:
+            return 2.0
+
+        # Calculate ATR as percentage of price
+        atr = data['atr'].iloc[-1] if 'atr' in data.columns else 0
+        close = data['close'].iloc[-1]
+        atr_percent = (atr / close) * 100 if close > 0 else 2.0
+
+        return atr_percent
+    except Exception as e:
+        cprint(f"⚠️ Volatility check error: {e}", "yellow")
+        return 2.0  # Default to medium
+
+def get_dynamic_interval():
+    """Get scan interval based on volatility or preset"""
+    global DATA_TIMEFRAME
+
+    # Load settings from file if exists
+    settings_file = Path(__file__).parent.parent / "data" / "scan_settings.json"
+    try:
+        if settings_file.exists():
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                preset = settings.get('preset', CURRENT_SCAN_PRESET)
+                auto_adjust = settings.get('auto_adjust', AUTO_ADJUST_INTERVAL)
+        else:
+            preset = CURRENT_SCAN_PRESET
+            auto_adjust = AUTO_ADJUST_INTERVAL
+    except:
+        preset = CURRENT_SCAN_PRESET
+        auto_adjust = AUTO_ADJUST_INTERVAL
+
+    if auto_adjust:
+        # Auto-adjust based on volatility
+        volatility = get_market_volatility()
+
+        if volatility > VOLATILITY_THRESHOLDS["high"]:
+            preset = "active"
+            cprint(f"📈 High volatility ({volatility:.2f}%) → Active mode (15min scans)", "yellow")
+        elif volatility < VOLATILITY_THRESHOLDS["low"]:
+            preset = "swing"
+            cprint(f"📉 Low volatility ({volatility:.2f}%) → Swing mode (60min scans)", "cyan")
+        else:
+            preset = "standard"
+            cprint(f"📊 Normal volatility ({volatility:.2f}%) → Standard mode (30min scans)", "white")
+
+    # Get preset settings
+    scan_minutes, timeframe, description = SCAN_PRESETS.get(preset, SCAN_PRESETS["standard"])
+    DATA_TIMEFRAME = timeframe  # Update timeframe globally
+
+    cprint(f"🔄 Scan interval: {scan_minutes}min | Timeframe: {timeframe} | {description}", "cyan")
+
+    return scan_minutes * 60  # Return seconds
+
 def main():
     """Main function to run the trading agent every 15 minutes"""
     cprint("🌙 Moon Dev AI Trading System Starting Up! 🚀", "white", "on_blue")
 
     agent = TradingAgent()
-    INTERVAL = SLEEP_BETWEEN_RUNS_MINUTES * 60  # Convert minutes to seconds
+    INTERVAL = get_dynamic_interval()  # Get initial interval
 
     while True:
         try:
@@ -1589,10 +2112,17 @@ def main():
                 # We have an open position - monitor P&L instead of sleeping
                 cprint(f"\n🔍 Open position detected for {monitored_token}", "yellow", attrs=['bold'])
                 monitor_position_pnl(monitored_token)
-                cprint(f"\n✅ Position closed. Resuming normal trading cycle...", "green")
+                cprint(f"\n✅ Position closed.", "green")
+
+                # After position closes, wait before next analysis to respect scan interval
+                INTERVAL = get_dynamic_interval()
+                next_run = datetime.now() + timedelta(seconds=INTERVAL)
+                cprint(f"⏳ Waiting for next scan at {next_run.strftime('%Y-%m-%d %H:%M:%S')} ({INTERVAL//60} min)", "white", "on_green")
+                time.sleep(INTERVAL)
             else:
-                # No open position - sleep until next cycle
-                next_run = datetime.now() + timedelta(minutes=SLEEP_BETWEEN_RUNS_MINUTES)
+                # No open position - recalculate interval and sleep
+                INTERVAL = get_dynamic_interval()
+                next_run = datetime.now() + timedelta(seconds=INTERVAL)
                 cprint(f"\n⏳ No open positions. Next run at {next_run.strftime('%Y-%m-%d %H:%M:%S')}", "white", "on_green")
                 time.sleep(INTERVAL)
                 

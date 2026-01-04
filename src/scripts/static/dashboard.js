@@ -434,6 +434,18 @@
             }
         }
 
+        async function cancelDuplicateOrders() {
+            showStatus('Cancelling duplicate orders...', '');
+            try {
+                const response = await fetch('/api/cancel-duplicate-orders', { method: 'POST' });
+                const data = await response.json();
+                showStatus(data.message, data.success ? 'success' : 'error');
+                setTimeout(fetchData, 2000);
+            } catch (error) {
+                showStatus('Error: ' + error.message, 'error');
+            }
+        }
+
         async function forceBuy() {
             const symbol = prompt('Enter symbol to buy (e.g., BTC, ETH, SOL):', 'BTC');
             if (!symbol) return;

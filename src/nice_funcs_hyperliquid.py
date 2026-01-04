@@ -225,19 +225,43 @@ def place_tp_sl_orders(symbol, entry_price, position_size, is_long, tp_percent, 
     """
     print(colored(f'\n🎯 Setting TP/SL orders for {symbol}', 'cyan', attrs=['bold']))
 
+    # Ensure all values are floats (API may return strings)
+    entry_price = float(entry_price)
+    position_size = float(position_size)
+    tp_percent = float(tp_percent)
+    sl_percent = float(sl_percent)
+
     exchange = Exchange(account, constants.MAINNET_API_URL)
+    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+
+    # Cancel existing orders for this symbol to prevent duplicates
+    open_orders = info.open_orders(account.address)
+    symbol_orders = [o for o in open_orders if o['coin'] == symbol]
+    if symbol_orders:
+        print(f"   🗑️ Cancelling {len(symbol_orders)} existing orders for {symbol}...")
+        for order in symbol_orders:
+            try:
+                exchange.cancel(order['coin'], order['oid'])
+            except Exception as e:
+                print(colored(f"   ⚠️ Could not cancel order {order['oid']}: {e}", 'yellow'))
+        print(f"   ✅ Cleared existing orders")
+
     sz_decimals, px_decimals = get_sz_px_decimals(symbol)
+
+    # For trigger orders, use 0 decimals for high-value assets (BTC, ETH)
+    # HyperLiquid requires whole number trigger prices for these
+    trigger_decimals = 0 if entry_price > 100 else px_decimals
 
     # Calculate TP and SL prices based on position direction
     if is_long:
-        tp_price = round(entry_price * (1 + tp_percent / 100), px_decimals)
-        sl_price = round(entry_price * (1 - sl_percent / 100), px_decimals)
+        tp_price = round(entry_price * (1 + tp_percent / 100), trigger_decimals)
+        sl_price = round(entry_price * (1 - sl_percent / 100), trigger_decimals)
         # For long: TP sells above entry, SL sells below entry
         tp_is_buy = False  # Sell to close long
         sl_is_buy = False  # Sell to close long
     else:
-        tp_price = round(entry_price * (1 - tp_percent / 100), px_decimals)
-        sl_price = round(entry_price * (1 + sl_percent / 100), px_decimals)
+        tp_price = round(entry_price * (1 - tp_percent / 100), trigger_decimals)
+        sl_price = round(entry_price * (1 + sl_percent / 100), trigger_decimals)
         # For short: TP buys below entry, SL buys above entry
         tp_is_buy = True   # Buy to close short
         sl_is_buy = True   # Buy to close short
@@ -384,25 +408,26 @@ def get_account_value(account):
 
 def market_buy(symbol, usd_size, account):
     """Market buy using HyperLiquid"""
+    import math
     print(colored(f'🛒 Market BUY {symbol} for ${usd_size}', 'green'))
 
     # Get current ask price
     ask, bid, _ = ask_bid(symbol)
 
-    # Overbid by 0.1% to ensure fill (market buy needs to be above ask)
-    buy_price = ask * 1.001
+    # Get price decimals for this symbol
+    sz_decimals, px_decimals = get_sz_px_decimals(symbol)
 
-    # Round to appropriate decimals for BTC (whole numbers)
-    if symbol == 'BTC':
-        buy_price = round(buy_price)
-    else:
-        buy_price = round(buy_price, 1)
+    # Overbid by 0.5% to ensure fill (market buy needs to be above ask)
+    buy_price = ask * 1.005
+
+    # Round UP to ensure we're above ask (for buys, round up)
+    multiplier = 10 ** px_decimals
+    buy_price = math.ceil(buy_price * multiplier) / multiplier
 
     # Calculate position size
     pos_size = usd_size / buy_price
 
-    # Get decimals and round
-    sz_decimals, _ = get_sz_px_decimals(symbol)
+    # Round position size down
     pos_size = round(pos_size, sz_decimals)
 
     # Ensure minimum order value
@@ -412,7 +437,8 @@ def market_buy(symbol, usd_size, account):
         pos_size = 11 / buy_price  # $11 to have buffer
         pos_size = round(pos_size, sz_decimals)
 
-    print(f'   Placing IOC buy at ${buy_price} (0.1% above ask ${ask})')
+    print(f'{symbol} price: {ask} | sz decimals: {sz_decimals} | px decimals: {px_decimals}')
+    print(f'   Placing IOC buy at ${buy_price} (0.5% above ask ${ask})')
     print(f'   Position size: {pos_size} {symbol} (value: ${pos_size * buy_price:.2f})')
 
     # Place IOC order above ask to ensure fill
@@ -532,6 +558,10 @@ def _get_account_from_env():
 def _get_ohlcv(symbol, interval, start_time, end_time, batch_size=BATCH_SIZE):
     """Internal function to fetch OHLCV data from Hyperliquid"""
     global timestamp_offset
+
+    # HyperLiquid API requires lowercase intervals (e.g., '1h' not '1H')
+    interval = interval.lower()
+
     print(f'\n🔍 Requesting data for {symbol}:')
     print(f'📊 Batch Size: {batch_size}')
     print(f'⏰ Interval: {interval}')
