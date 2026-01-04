@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CryptoVerge Terminal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+    <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">CV</div>
+                <div class="logo-text">
+                    <h1>CryptoVerge</h1>
+                    <span>HyperLiquid Terminal</span>
+                </div>
+            </div>
+
+            <div class="header-center">
+                <div class="status-badge">
+                    <div class="status-dot stopped" id="status-dot"></div>
+                    <span class="status-label" id="status-text">Offline</span>
+                </div>
+                <div class="header-controls">
+                    <button class="btn btn-success" onclick="sendCommand('start')">Start</button>
+                    <button class="btn btn-danger" onclick="sendCommand('stop')">Stop</button>
+                    <button class="btn" onclick="sendCommand('restart')">Restart</button>
+                    <button class="btn btn-primary" onclick="sendCommand('run-analysis')">Analyze</button>
+                    <button class="btn" onclick="runBacktest()" style="border-color: var(--accent-purple); color: var(--accent-purple);">Backtest</button>
+                </div>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:16px;">
+                <div id="fear-greed" class="status-badge" style="cursor:help;" title="Crypto Fear & Greed Index">
+                    <span style="font-size:10px;color:var(--text-secondary);">F&G:</span>
+                    <span id="fg-value" style="font-weight:700;font-size:12px;">--</span>
+                    <span id="fg-label" style="font-size:9px;color:var(--text-muted);">Loading</span>
+                </div>
+                <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+                    <span class="theme-toggle-icon active" id="dark-icon">&#9790;</span>
+                    <span class="theme-toggle-icon" id="light-icon">&#9728;</span>
+                </button>
+                <div class="header-time" id="current-time">--:--:--</div>
+            </div>
+        </header>
+
+        <!-- Left Sidebar -->
+        <aside class="sidebar-left">
+            <!-- Account Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Account</span>
+                    <span class="panel-badge">Live</span>
+                </div>
+                <div class="stat-grid">
+                    <div class="stat-item stat-large">
+                        <span class="stat-label">Equity</span>
+                        <span class="stat-value" id="equity">$0.00</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Balance</span>
+                        <span class="stat-value" id="balance">$0.00</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Unrealized P/L</span>
+                        <span class="stat-value" id="unrealized-pnl">$0.00</span>
+                    </div>
+                </div>
+                <div class="pnl-row">
+                    <div class="pnl-card">
+                        <div class="pnl-label" id="pnl-24h-label">24h P/L</div>
+                        <div class="pnl-value" id="pnl-24h">--</div>
+                    </div>
+                    <div class="pnl-card">
+                        <div class="pnl-label" id="pnl-7d-label">7D P/L</div>
+                        <div class="pnl-value" id="pnl-7d">--</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Watchlist Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Watchlist</span>
+                </div>
+                <div class="token-list" id="token-list">
+                    <div class="token-item">
+                        <div class="token-info">
+                            <div class="token-icon">BTC</div>
+                            <span class="token-name">Bitcoin</span>
+                        </div>
+                        <span class="token-signal pending">Pending</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Equity Chart -->
+            <div class="chart-panel">
+                <div class="chart-header">
+                    <span class="panel-title">Equity Curve</span>
+                    <div class="chart-timeframes">
+                        <button class="timeframe-btn" data-hours="1" onclick="setChartTimeframe(1)">1H</button>
+                        <button class="timeframe-btn" data-hours="24" onclick="setChartTimeframe(24)">1D</button>
+                        <button class="timeframe-btn active" data-hours="168" onclick="setChartTimeframe(168)">7D</button>
+                        <button class="timeframe-btn" data-hours="720" onclick="setChartTimeframe(720)">1M</button>
+                        <button class="timeframe-btn" data-hours="8760" onclick="setChartTimeframe(8760)">1Y</button>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <canvas id="equity-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- Live Chart -->
+            <div class="chart-panel">
+                <div class="chart-header">
+                    <div style="display:flex;align-items:center;gap:12px;">
+                        <span class="panel-title">Live Chart</span>
+                        <select id="chart-symbol" class="setting-input" style="padding:4px 8px;font-size:11px;" onchange="updateTradingViewChart()">
+                            <option value="BINANCE:BTCUSDT">BTC</option>
+                            <option value="BINANCE:ETHUSDT">ETH</option>
+                            <option value="BINANCE:SOLUSDT">SOL</option>
+                            <option value="BINANCE:DOGEUSDT">DOGE</option>
+                            <option value="BINANCE:XRPUSDT">XRP</option>
+                        </select>
+                    </div>
+                    <div class="chart-timeframes">
+                        <button class="live-tf-btn timeframe-btn" data-interval="1" onclick="setLiveChartTimeframe('1')">1m</button>
+                        <button class="live-tf-btn timeframe-btn" data-interval="5" onclick="setLiveChartTimeframe('5')">5m</button>
+                        <button class="live-tf-btn timeframe-btn" data-interval="15" onclick="setLiveChartTimeframe('15')">15m</button>
+                        <button class="live-tf-btn timeframe-btn active" data-interval="60" onclick="setLiveChartTimeframe('60')">1H</button>
+                        <button class="live-tf-btn timeframe-btn" data-interval="240" onclick="setLiveChartTimeframe('240')">4H</button>
+                        <button class="live-tf-btn timeframe-btn" data-interval="D" onclick="setLiveChartTimeframe('D')">1D</button>
+                    </div>
+                </div>
+                <div id="tradingview-widget" style="height:400px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border-color);overflow:hidden;">
+                </div>
+            </div>
+
+            <!-- Positions -->
+            <div class="positions-panel">
+                <div class="panel-header">
+                    <span class="panel-title">Open Positions</span>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn" style="background:#00aa55;" onclick="forceBuy()">Force Buy 25%</button>
+                        <button class="btn" onclick="setAllTpSl()">Set TP/SL</button>
+                    </div>
+                </div>
+                <div class="positions-grid" id="positions-container">
+                    <div class="no-positions">No open positions</div>
+                </div>
+            </div>
+
+            <!-- Trade Analysis -->
+            <div class="panel" style="margin-top:12px;max-height:200px;overflow-y:auto;">
+                <div class="panel-header">
+                    <span class="panel-title">Trade Reasoning</span>
+                    <button class="btn" onclick="clearTradeAnalysis()">Clear</button>
+                </div>
+                <div id="trade-analysis-container" style="padding:12px;font-size:12px;color:#a0a0a0;line-height:1.5;">
+                    <div class="no-analysis">No trades yet. Analysis will appear here when positions are opened.</div>
+                </div>
+            </div>
+
+            <!-- Logs -->
+            <div class="logs-panel">
+                <div class="logs-header">
+                    <span class="panel-title">System Logs</span>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn" onclick="scrollLogsToBottom()" title="Scroll to bottom">↓ Bottom</button>
+                        <button class="btn" onclick="sendCommand('clear-logs')">Clear</button>
+                    </div>
+                </div>
+                <div class="logs-content">
+                    <pre id="log-content">Waiting for logs...</pre>
+                </div>
+            </div>
+        </main>
+
+        <!-- Right Sidebar -->
+        <aside class="sidebar-right">
+            <!-- Settings Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Trading Settings</span>
+                </div>
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label class="setting-label">Leverage</label>
+                        <input type="number" class="setting-input" id="setting-leverage" value="5">
+                    </div>
+                    <div class="setting-item">
+                        <label class="setting-label">Position %</label>
+                        <input type="number" class="setting-input" id="setting-max_position_pct" value="25">
+                    </div>
+                    <div class="setting-item">
+                        <label class="setting-label">Stop Loss %</label>
+                        <input type="number" class="setting-input" id="setting-stop_loss" value="3">
+                    </div>
+                    <div class="setting-item">
+                        <label class="setting-label">Take Profit %</label>
+                        <input type="number" class="setting-input" id="setting-take_profit" value="5">
+                    </div>
+                    <div class="setting-item full-width" style="margin-top:12px;">
+                        <label class="setting-label">Min Confidence: <span id="confidence-value">70</span>%</label>
+                        <input type="range" min="0" max="100" value="70" class="setting-input" id="setting-min_confidence"
+                               style="width:100%;cursor:pointer;"
+                               oninput="document.getElementById('confidence-value').textContent=this.value">
+                    </div>
+                    <div class="setting-item full-width" style="margin-top:16px;border-top:1px solid #1a1a2e;padding-top:12px;">
+                        <label class="setting-label" style="margin-bottom:8px;display:block;">Scan Interval</label>
+                        <div id="active-interval-display" style="margin-bottom:10px;padding:10px;background:linear-gradient(135deg, #1a1a2e 0%, #0d0d18 100%);border:1px solid #00aa55;border-radius:6px;">
+                            <div style="display:flex;justify-content:space-between;align-items:center;">
+                                <span style="color:#888;font-size:11px;">CURRENTLY ACTIVE:</span>
+                                <span id="active-interval-badge" style="background:#00aa55;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:bold;">Loading...</span>
+                            </div>
+                            <div style="margin-top:6px;font-size:13px;">
+                                <span id="active-interval-name" style="color:#fff;font-weight:bold;">--</span>
+                                <span id="active-interval-details" style="color:#888;margin-left:8px;">--</span>
+                            </div>
+                            <div id="volatility-display" style="margin-top:6px;font-size:11px;color:#666;">
+                                <span>Volatility: </span><span id="volatility-value">--</span>
+                            </div>
+                        </div>
+                        <label style="color:#666;font-size:11px;margin-bottom:4px;display:block;">Manual Preference (when auto-adjust is OFF):</label>
+                        <select id="scan-preset" class="setting-input" style="width:100%;padding:8px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;">
+                            <option value="scalp">Scalp (5min/15m) - High volatility</option>
+                            <option value="active">Active (15min/1H) - Moderate volatility</option>
+                            <option value="standard" selected>Standard (30min/1H) - Normal conditions</option>
+                            <option value="swing">Swing (60min/4H) - Lower volatility</option>
+                            <option value="patient">Patient (120min/4H) - Calm markets</option>
+                        </select>
+                        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" id="auto-adjust" checked style="cursor:pointer;">
+                            <label for="auto-adjust" style="color:#888;font-size:12px;cursor:pointer;">Auto-adjust based on volatility</label>
+                        </div>
+                        <div id="volatility-info" style="margin-top:8px;padding:8px;background:#0d0d18;border-radius:4px;font-size:11px;color:#666;">
+                            Auto-adjust uses ATR% to switch intervals:<br>
+                            • ATR > 3% → Active (faster scans)<br>
+                            • ATR 1.5-3% → Standard<br>
+                            • ATR < 1.5% → Swing (slower scans)
+                        </div>
+                    </div>
+                </div>
+                <button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="saveSettings()">Save Settings</button>
+                <button class="btn" style="width:100%;margin-top:8px;border-color:#00aa55;color:#00aa55;" onclick="saveScanSettings()">Save Scan Interval</button>
+            </div>
+
+            <!-- Trading Goals Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">Trading Goals</span>
+                </div>
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label class="setting-label">Daily Target $</label>
+                        <input type="number" class="setting-input" id="goal-daily_profit" value="50">
+                    </div>
+                    <div class="setting-item">
+                        <label class="setting-label">Weekly Target $</label>
+                        <input type="number" class="setting-input" id="goal-weekly_profit" value="250">
+                    </div>
+                    <div class="setting-item">
+                        <label class="setting-label">Max Daily Loss $</label>
+                        <input type="number" class="setting-input" id="goal-max_loss" value="30">
+                    </div>
+                    <div class="setting-item">
+                        <label class="setting-label">Target Balance $</label>
+                        <input type="number" class="setting-input" id="goal-target_balance" value="1000">
+                    </div>
+                    <div class="setting-item">
+                        <label class="setting-label">Risk/Trade %</label>
+                        <input type="number" class="setting-input" id="goal-risk_percent" value="5">
+                    </div>
+                    <div class="setting-item">
+                        <label class="setting-label">Strategy</label>
+                        <select class="setting-input" id="goal-strategy">
+                            <option value="conservative">Conservative</option>
+                            <option value="moderate">Moderate</option>
+                            <option value="aggressive">Aggressive</option>
+                        </select>
+                    </div>
+                    <div class="setting-item full-width">
+                        <label class="setting-label">Custom Goal</label>
+                        <input type="text" class="setting-input" id="goal-custom" placeholder="e.g., Focus on BTC only">
+                    </div>
+                </div>
+                <button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="saveGoals()">Save Goals</button>
+            </div>
+
+            <!-- Indicators Panel -->
+            <div class="panel" style="flex:1;overflow-y:auto;">
+                <div class="panel-header">
+                    <span class="panel-title">AI Indicators</span>
+                </div>
+                <div class="impact-legend">
+                    <span><span class="indicator-impact high">H</span> High</span>
+                    <span><span class="indicator-impact medium">M</span> Medium</span>
+                    <span><span class="indicator-impact low">L</span> Low</span>
+                </div>
+                <div class="indicators-grid" id="indicators-container">
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-rsi" onchange="toggleIndicator('rsi', this.checked)">
+                        <span class="indicator-impact high">H</span>
+                        <span class="indicator-name">RSI (14)</span>
+                        <span class="indicator-desc">Momentum 0-100. Above 70 = overbought, below 30 = oversold</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-sma_200" onchange="toggleIndicator('sma_200', this.checked)">
+                        <span class="indicator-impact high">H</span>
+                        <span class="indicator-name">SMA 200</span>
+                        <span class="indicator-desc">Long-term trend. Price above = bullish, below = bearish</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-macd" onchange="toggleIndicator('macd', this.checked)">
+                        <span class="indicator-impact high">H</span>
+                        <span class="indicator-name">MACD</span>
+                        <span class="indicator-desc">Trend momentum & reversals. Signal line crossovers</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-bollinger" onchange="toggleIndicator('bollinger', this.checked)">
+                        <span class="indicator-impact high">H</span>
+                        <span class="indicator-name">Bollinger Bands</span>
+                        <span class="indicator-desc">Volatility bands. Price at upper = overbought, lower = oversold</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-volume" onchange="toggleIndicator('volume', this.checked)">
+                        <span class="indicator-impact high">H</span>
+                        <span class="indicator-name">Volume</span>
+                        <span class="indicator-desc">Confirms price moves. High volume = strong signal validity</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-golden_cross" onchange="toggleIndicator('golden_cross', this.checked)">
+                        <span class="indicator-impact high">H</span>
+                        <span class="indicator-name">Golden Cross</span>
+                        <span class="indicator-desc">MA20 crosses MA200. Golden = buy, Death Cross = sell</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-sma_20" onchange="toggleIndicator('sma_20', this.checked)">
+                        <span class="indicator-impact medium">M</span>
+                        <span class="indicator-name">SMA 20</span>
+                        <span class="indicator-desc">Short-term trend direction. Dynamic support/resistance</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-sma_50" onchange="toggleIndicator('sma_50', this.checked)">
+                        <span class="indicator-impact medium">M</span>
+                        <span class="indicator-name">SMA 50</span>
+                        <span class="indicator-desc">Medium-term trend. Institutional traders watch this level</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-atr" onchange="toggleIndicator('atr', this.checked)">
+                        <span class="indicator-impact medium">M</span>
+                        <span class="indicator-name">ATR (14)</span>
+                        <span class="indicator-desc">Average True Range. Used for stop-loss & position sizing</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-adx" onchange="toggleIndicator('adx', this.checked)">
+                        <span class="indicator-impact medium">M</span>
+                        <span class="indicator-name">ADX</span>
+                        <span class="indicator-desc">Trend strength 0-100. Above 25 = trending, below = ranging</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-fibonacci" onchange="toggleIndicator('fibonacci', this.checked)">
+                        <span class="indicator-impact medium">M</span>
+                        <span class="indicator-name">Fibonacci</span>
+                        <span class="indicator-desc">Key levels: 23.6%, 38.2%, 50%, 61.8%. Support & resistance</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-stochastic" onchange="toggleIndicator('stochastic', this.checked)">
+                        <span class="indicator-impact low">L</span>
+                        <span class="indicator-name">Stochastic</span>
+                        <span class="indicator-desc">Similar to RSI. Above 80 = overbought, below 20 = oversold</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-cci" onchange="toggleIndicator('cci', this.checked)">
+                        <span class="indicator-impact low">L</span>
+                        <span class="indicator-name">CCI</span>
+                        <span class="indicator-desc">Commodity Channel Index. Identifies cyclical price patterns</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-williams_r" onchange="toggleIndicator('williams_r', this.checked)">
+                        <span class="indicator-impact low">L</span>
+                        <span class="indicator-name">Williams %R</span>
+                        <span class="indicator-desc">Momentum oscillator. -20 to 0 = overbought, -100 to -80 = oversold</span>
+                    </label>
+                    <label class="indicator-item">
+                        <input type="checkbox" id="ind-obv" onchange="toggleIndicator('obv', this.checked)">
+                        <span class="indicator-impact low">L</span>
+                        <span class="indicator-name">OBV</span>
+                        <span class="indicator-desc">On-Balance Volume. Rising OBV = accumulation, falling = distribution</span>
+                    </label>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <span class="modal-title" id="modal-title">Analysis Report</span>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Command Status -->
+    <div class="command-status" id="command-status"></div>
+
+    <script src="/static/dashboard.js"></script>
+
+    <!-- Price Ticker Bar -->
+    <div class="price-ticker">
+        <div id="price-ticker-items" style="display:flex;gap:32px;">
+            <div class="ticker-item"><span class="ticker-symbol">Loading prices...</span></div>
+        </div>
+    </div>
+</body>
+</html>
