@@ -29,6 +29,13 @@
                     <div class="status-dot stopped" id="status-dot"></div>
                     <span class="status-label" id="status-text">Offline</span>
                 </div>
+                <div class="status-badge" id="scanner-badge" title="Log Scanner - Monitors for missing TP/SL and errors" style="cursor:help;flex-direction:column;align-items:center;">
+                    <div style="display:flex;align-items:center;gap:6px;">
+                        <div class="status-dot stopped" id="scanner-dot"></div>
+                        <span class="status-label" id="scanner-text">Scanner</span>
+                    </div>
+                    <span id="scanner-time" style="font-size:9px;color:var(--text-muted);">--:--</span>
+                </div>
                 <div class="header-controls">
                     <button class="btn btn-success" onclick="sendCommand('start')">Start</button>
                     <button class="btn btn-danger" onclick="sendCommand('stop')">Stop</button>
@@ -70,6 +77,10 @@
                         <span class="stat-value" id="balance">$0.00</span>
                     </div>
                     <div class="stat-item">
+                        <span class="stat-label">Available</span>
+                        <span class="stat-value" id="available" style="color:#00ff88;">$0.00</span>
+                    </div>
+                    <div class="stat-item">
                         <span class="stat-label">Unrealized P/L</span>
                         <span class="stat-value" id="unrealized-pnl">$0.00</span>
                     </div>
@@ -83,6 +94,22 @@
                         <div class="pnl-label" id="pnl-7d-label">7D P/L</div>
                         <div class="pnl-value" id="pnl-7d">--</div>
                     </div>
+                </div>
+                <!-- Daily Drawdown Circuit Breaker -->
+                <div class="pnl-row" style="margin-top:8px;border-top:1px solid var(--border-color);padding-top:8px;">
+                    <div class="pnl-card" style="flex:2;">
+                        <div class="pnl-label">Daily P/L</div>
+                        <div class="pnl-value" id="daily-pnl">--</div>
+                    </div>
+                    <div class="pnl-card" id="circuit-breaker-card" style="flex:1;cursor:pointer;" onclick="resetDrawdown()" title="Click to reset circuit breaker">
+                        <div class="pnl-label">Limit</div>
+                        <div class="pnl-value" id="daily-limit" style="font-size:11px;">$50</div>
+                    </div>
+                </div>
+                <div id="circuit-breaker-alert" style="display:none;margin-top:8px;padding:8px;background:#ff000033;border:1px solid #ff4444;border-radius:6px;text-align:center;">
+                    <div style="color:#ff4444;font-weight:bold;font-size:11px;">🛑 CIRCUIT BREAKER ACTIVE</div>
+                    <div style="color:#ff8888;font-size:10px;" id="circuit-breaker-msg">Trading halted</div>
+                    <button onclick="resetDrawdown()" style="margin-top:6px;padding:4px 12px;background:#ff4444;border:none;color:white;border-radius:4px;cursor:pointer;font-size:10px;">Reset</button>
                 </div>
             </div>
 
@@ -156,6 +183,7 @@
                         <button class="btn" style="background:#00aa55;" onclick="forceBuy()">Force Buy 25%</button>
                         <button class="btn" onclick="setAllTpSl()">Set TP/SL</button>
                         <button class="btn" style="background:#cc6600;" onclick="cancelDuplicateOrders()">Cancel Dupes</button>
+                        <button class="btn" style="background:#cc0000;" onclick="cancelAllOrders()">Cancel All</button>
                     </div>
                 </div>
                 <div class="positions-grid" id="positions-container">
@@ -222,6 +250,64 @@
                         <input type="range" min="0" max="100" value="70" class="setting-input" id="setting-min_confidence"
                                style="width:100%;cursor:pointer;"
                                oninput="document.getElementById('confidence-value').textContent=this.value">
+                    </div>
+                    <!-- Auto TP/SL Settings -->
+                    <div class="setting-item full-width" style="margin-top:16px;border-top:1px solid #1a1a2e;padding-top:12px;">
+                        <label class="setting-label" style="margin-bottom:8px;display:block;">Auto TP/SL from Analysis</label>
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+                            <input type="checkbox" id="auto-tpsl-enabled" style="cursor:pointer;">
+                            <label for="auto-tpsl-enabled" style="color:#888;font-size:12px;cursor:pointer;">Enable auto TP/SL after analysis</label>
+                        </div>
+                        <div style="display:flex;gap:10px;margin-bottom:10px;">
+                            <div style="flex:1;">
+                                <label style="color:#666;font-size:11px;display:block;margin-bottom:4px;">Max SL %</label>
+                                <input type="number" id="auto-tpsl-max-sl" value="7" min="1" max="20" step="0.5"
+                                       style="width:100%;padding:6px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;">
+                            </div>
+                            <div style="flex:1;">
+                                <label style="color:#666;font-size:11px;display:block;margin-bottom:4px;">TP/SL Mode</label>
+                                <select id="auto-tpsl-mode" style="width:100%;padding:6px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;">
+                                    <option value="conservative">Conservative</option>
+                                    <option value="moderate" selected>Moderate</option>
+                                    <option value="aggressive">Aggressive</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div style="padding:8px;background:#0d0d18;border-radius:4px;font-size:11px;color:#666;">
+                            When enabled, automatically sets TP/SL on positions after each analysis cycle using AI-recommended levels. Only applies to BUY signals.
+                        </div>
+                        <!-- ATR-Based Stops -->
+                        <div style="margin-top:12px;padding-top:12px;border-top:1px dashed #1a1a2e;">
+                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+                                <input type="checkbox" id="atr-stops-enabled" style="cursor:pointer;">
+                                <label for="atr-stops-enabled" style="color:#00d4aa;font-size:12px;cursor:pointer;font-weight:bold;">Use ATR-Based Stops</label>
+                            </div>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+                                <div>
+                                    <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">ATR Period</label>
+                                    <input type="number" id="atr-period" value="14" min="5" max="50" step="1"
+                                           style="width:100%;padding:5px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;font-size:11px;">
+                                </div>
+                                <div>
+                                    <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">Min SL %</label>
+                                    <input type="number" id="atr-min-sl" value="1.0" min="0.5" max="5" step="0.5"
+                                           style="width:100%;padding:5px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;font-size:11px;">
+                                </div>
+                                <div>
+                                    <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">SL Multiplier</label>
+                                    <input type="number" id="atr-sl-mult" value="2.0" min="0.5" max="5" step="0.5"
+                                           style="width:100%;padding:5px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;font-size:11px;">
+                                </div>
+                                <div>
+                                    <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">TP Multiplier</label>
+                                    <input type="number" id="atr-tp-mult" value="3.0" min="1" max="10" step="0.5"
+                                           style="width:100%;padding:5px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;font-size:11px;">
+                                </div>
+                            </div>
+                            <div style="padding:6px;background:#001a10;border:1px solid #00442220;border-radius:4px;font-size:10px;color:#00aa55;">
+                                ATR adjusts stops to market volatility. SL = Entry - (ATR x SL Mult). Higher volatility = wider stops.
+                            </div>
+                        </div>
                     </div>
                     <div class="setting-item full-width" style="margin-top:16px;border-top:1px solid #1a1a2e;padding-top:12px;">
                         <label class="setting-label" style="margin-bottom:8px;display:block;">Scan Interval</label>
@@ -302,6 +388,64 @@
                     </div>
                 </div>
                 <button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="saveGoals()">Save Goals</button>
+            </div>
+
+            <!-- Alerts Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span class="panel-title">🔔 Discord Alerts</span>
+                </div>
+                <div class="settings-grid">
+                    <div class="setting-item full-width" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+                        <input type="checkbox" id="alerts-enabled" checked style="cursor:pointer;">
+                        <label for="alerts-enabled" style="color:#fff;font-size:12px;cursor:pointer;">Enable Discord Alerts</label>
+                    </div>
+                    <div class="setting-item full-width">
+                        <label class="setting-label">Discord Webhook URL</label>
+                        <input type="text" class="setting-input" id="discord-webhook" placeholder="https://discord.com/api/webhooks/..." style="font-size:11px;">
+                    </div>
+                    <div class="setting-item full-width" style="margin-top:8px;">
+                        <label class="setting-label" style="margin-bottom:6px;display:block;">Alert Types</label>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px;">
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                                <input type="checkbox" id="alert-position_opened" checked>
+                                <span>Position Opened</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                                <input type="checkbox" id="alert-position_closed" checked>
+                                <span>Position Closed</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                                <input type="checkbox" id="alert-stop_loss_hit" checked>
+                                <span>Stop Loss Hit</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                                <input type="checkbox" id="alert-take_profit_hit" checked>
+                                <span>Take Profit Hit</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                                <input type="checkbox" id="alert-trailing_stop_hit" checked>
+                                <span>Trailing Stop Hit</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                                <input type="checkbox" id="alert-drawdown_warning" checked>
+                                <span>Drawdown Warning</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                                <input type="checkbox" id="alert-circuit_breaker" checked>
+                                <span>Circuit Breaker</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                                <input type="checkbox" id="alert-critical_error" checked>
+                                <span>Critical Errors</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:12px;">
+                    <button class="btn btn-primary" style="flex:1;" onclick="saveAlerts()">Save Alerts</button>
+                    <button class="btn" style="border-color:#00aa55;color:#00aa55;" onclick="testAlert()">Test</button>
+                </div>
             </div>
 
             <!-- Indicators Panel -->

@@ -116,7 +116,7 @@ AI_MAX_TOKENS = 4096   # Max tokens for AI response (increased for Claude)
 USE_PORTFOLIO_ALLOCATION = False # True = Use AI for portfolio allocation across multiple tokens
                                  # False = Simple mode - trade single token at MAX_POSITION_PERCENTAGE
 
-MAX_POSITION_PERCENTAGE = 80     # % of account balance to use as MARGIN per position (0-100)
+MAX_POSITION_PERCENTAGE = 40     # % of account balance to use as MARGIN per position (0-100)
                                  # How it works per exchange:
                                  # - ASTER/HYPERLIQUID: % of balance used as MARGIN (then multiplied by leverage)
                                  #   Example: $100 balance, 90% = $90 margin
@@ -141,6 +141,27 @@ PNL_CHECK_INTERVAL = 5           # Seconds between P&L checks when position is o
 USE_TRAILING_STOP = True         # Enable trailing stop loss
 TRAILING_STOP_ACTIVATION = 3.0   # Activate trailing stop after this % profit
 TRAILING_STOP_DISTANCE = 2.0     # Trail this % behind highest price
+
+# 📊 ATR-BASED DYNAMIC STOPS (volatility-adjusted)
+USE_ATR_STOPS = True             # True = Use ATR-based stops, False = use fixed percentage
+ATR_PERIOD = 14                  # ATR calculation period (14 is standard)
+ATR_SL_MULTIPLIER = 2.0          # Stop Loss = Entry ± (ATR × multiplier)
+                                 # Higher = wider stops (less likely to be stopped out by noise)
+                                 # Lower = tighter stops (more risk of premature exit)
+                                 # Common values: 1.5 (tight), 2.0 (standard), 3.0 (wide)
+ATR_TP_MULTIPLIER = 3.0          # Take Profit = Entry ± (ATR × multiplier)
+                                 # Usually 1.5x-2x the SL multiplier for good risk:reward
+ATR_MIN_SL_PCT = 1.0             # Minimum SL percentage (floor) - prevents too tight stops
+ATR_MAX_SL_PCT = 7.0             # Maximum SL percentage (ceiling) - prevents too wide stops
+ATR_TRAILING_MULTIPLIER = 1.5    # Trailing stop distance = ATR × multiplier
+
+# 🛑 DAILY DRAWDOWN CIRCUIT BREAKER
+DAILY_DRAWDOWN_ENABLED = True    # Enable daily drawdown protection
+DAILY_DRAWDOWN_LIMIT_USD = 50    # Max daily loss in USD before stopping (e.g., 50 = stop after -$50)
+DAILY_DRAWDOWN_LIMIT_PCT = 10    # Max daily loss as % of starting balance (e.g., 10 = stop after -10%)
+USE_DAILY_DRAWDOWN_PCT = False   # True = use percentage limit, False = use USD limit
+CLOSE_ON_DRAWDOWN = False        # True = close all positions when limit hit, False = just stop new trades
+DRAWDOWN_WARNING_PCT = 70        # Warn when this % of drawdown limit is reached (e.g., 70 = warn at 70% of limit)
 
 # Confidence Threshold
 MIN_CONFIDENCE_TO_TRADE = 70     # Only trade when AI confidence >= this % (0-100)
@@ -241,22 +262,11 @@ MONITORED_TOKENS = [
 # ⚠️ IMPORTANT: Only used when EXCHANGE = "ASTER" or "HYPERLIQUID"
 # Toggle coins on/off for analysis - True = enabled, False = disabled
 SYMBOLS_CONFIG = {
-    # All verified available on HyperLiquid
+    # Active coins only
     'BTC': True,       # Bitcoin
-    'ETH': False,       # Ethereum
-    'SOL': False,       # Solana
     'DOGE': True,      # Dogecoin
     'XRP': True,       # Ripple
-    'HBAR': False,     # Hedera
-    'AVAX': False,     # Avalanche
-    'LINK': False,     # Chainlink
-    'ARB': False,      # Arbitrum
-    'OP': False,       # Optimism
-    'SUI': False,      # Sui
-    'APT': False,      # Aptos
-    'TRUMP': False,    # Trump
-    'HYPE': False,     # Hype
-    'PEPE': False,     # Pepe (use kPEPE)
+    'kPEPE': True,     # Pepe (1000 PEPE on HyperLiquid)
 }
 
 # Active symbols list (auto-generated from SYMBOLS_CONFIG)
@@ -369,6 +379,493 @@ def get_goals_context():
 
     return context
 
+# ============================================================================
+# 🛑 DAILY DRAWDOWN CIRCUIT BREAKER
+# ============================================================================
+
+DRAWDOWN_STATE_FILE = Path(__file__).parent.parent / "data" / "drawdown_state.json"
+
+def load_drawdown_state():
+    """Load daily drawdown state from file"""
+    try:
+        if DRAWDOWN_STATE_FILE.exists():
+            with open(DRAWDOWN_STATE_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"⚠️ Could not load drawdown state: {e}")
+    return {}
+
+def save_drawdown_state(state):
+    """Save daily drawdown state to file"""
+    try:
+        with open(DRAWDOWN_STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Could not save drawdown state: {e}")
+
+def get_current_balance():
+    """Get current account balance for drawdown calculation"""
+    try:
+        if EXCHANGE == "HYPERLIQUID":
+            import eth_account
+            from hyperliquid.info import Info
+            from hyperliquid.utils import constants
+            import os
+
+            secret_key = os.getenv('HYPER_LIQUID_ETH_PRIVATE_KEY')
+            if not secret_key:
+                return None
+
+            account = eth_account.Account.from_key(secret_key)
+            info = Info(constants.MAINNET_API_URL, skip_ws=True)
+            user_state = info.user_state(account.address)
+            return float(user_state.get('marginSummary', {}).get('accountValue', 0))
+        else:
+            # For other exchanges, implement as needed
+            return None
+    except Exception as e:
+        print(f"⚠️ Could not get balance for drawdown check: {e}")
+        return None
+
+def check_daily_drawdown():
+    """
+    Check if daily drawdown limit has been reached.
+
+    Returns:
+        dict: {
+            'trading_allowed': bool,
+            'daily_pnl': float,
+            'daily_pnl_pct': float,
+            'limit': float,
+            'limit_pct': float,
+            'warning': bool,
+            'circuit_breaker_triggered': bool,
+            'starting_balance': float,
+            'current_balance': float,
+            'message': str
+        }
+    """
+    from datetime import datetime, date
+
+    result = {
+        'trading_allowed': True,
+        'daily_pnl': 0,
+        'daily_pnl_pct': 0,
+        'limit': DAILY_DRAWDOWN_LIMIT_USD,
+        'limit_pct': DAILY_DRAWDOWN_LIMIT_PCT,
+        'warning': False,
+        'circuit_breaker_triggered': False,
+        'starting_balance': 0,
+        'current_balance': 0,
+        'message': ''
+    }
+
+    if not DAILY_DRAWDOWN_ENABLED:
+        result['message'] = 'Daily drawdown protection disabled'
+        return result
+
+    # Get current balance
+    current_balance = get_current_balance()
+    if current_balance is None:
+        result['message'] = 'Could not get current balance'
+        return result
+
+    result['current_balance'] = current_balance
+
+    # Load state
+    state = load_drawdown_state()
+    today = date.today().isoformat()
+
+    # Check if we need to reset for new day
+    if state.get('date') != today:
+        # New day - record starting balance
+        state = {
+            'date': today,
+            'starting_balance': current_balance,
+            'circuit_breaker_triggered': False,
+            'triggered_at': None
+        }
+        save_drawdown_state(state)
+        cprint(f"📅 New trading day - Starting balance: ${current_balance:,.2f}", "cyan")
+
+    starting_balance = state.get('starting_balance', current_balance)
+    result['starting_balance'] = starting_balance
+
+    # Check if circuit breaker was already triggered today
+    if state.get('circuit_breaker_triggered'):
+        result['trading_allowed'] = False
+        result['circuit_breaker_triggered'] = True
+        result['message'] = f"🛑 Circuit breaker triggered at {state.get('triggered_at', 'unknown time')}"
+        return result
+
+    # Calculate daily P&L
+    daily_pnl = current_balance - starting_balance
+    daily_pnl_pct = (daily_pnl / starting_balance * 100) if starting_balance > 0 else 0
+
+    result['daily_pnl'] = daily_pnl
+    result['daily_pnl_pct'] = daily_pnl_pct
+
+    # Determine limit based on setting
+    if USE_DAILY_DRAWDOWN_PCT:
+        limit_value = starting_balance * (DAILY_DRAWDOWN_LIMIT_PCT / 100)
+        limit_reached = daily_pnl <= -limit_value
+        warning_threshold = -limit_value * (DRAWDOWN_WARNING_PCT / 100)
+    else:
+        limit_value = DAILY_DRAWDOWN_LIMIT_USD
+        limit_reached = daily_pnl <= -limit_value
+        warning_threshold = -limit_value * (DRAWDOWN_WARNING_PCT / 100)
+
+    # Check warning threshold
+    if daily_pnl <= warning_threshold and daily_pnl > -limit_value:
+        result['warning'] = True
+        pct_of_limit = abs(daily_pnl / limit_value * 100)
+        result['message'] = f"⚠️ WARNING: Daily loss ${abs(daily_pnl):,.2f} is {pct_of_limit:.0f}% of limit"
+
+        # 🔔 Send warning alert (only once per threshold crossing)
+        if ALERTS_AVAILABLE and pct_of_limit >= DRAWDOWN_WARNING_PCT:
+            try:
+                alert_drawdown_warning(daily_pnl, daily_pnl_pct, limit_value, pct_of_limit)
+            except Exception as e:
+                cprint(f"⚠️ Could not send drawdown warning alert: {e}", "yellow")
+
+    # Check if limit reached
+    if limit_reached:
+        result['trading_allowed'] = False
+        result['circuit_breaker_triggered'] = True
+        result['message'] = f"🛑 CIRCUIT BREAKER: Daily loss ${abs(daily_pnl):,.2f} exceeded limit ${limit_value:,.2f}"
+
+        # Update state
+        state['circuit_breaker_triggered'] = True
+        state['triggered_at'] = datetime.now().strftime("%H:%M:%S")
+        save_drawdown_state(state)
+
+        # 🔔 Send circuit breaker alert
+        if ALERTS_AVAILABLE:
+            try:
+                alert_circuit_breaker(daily_pnl, daily_pnl_pct, limit_value, starting_balance, current_balance)
+            except Exception as e:
+                cprint(f"⚠️ Could not send circuit breaker alert: {e}", "yellow")
+
+        cprint(f"\n{'='*60}", "red")
+        cprint(f"🛑 DAILY DRAWDOWN CIRCUIT BREAKER TRIGGERED!", "red", attrs=['bold'])
+        cprint(f"{'='*60}", "red")
+        cprint(f"   Starting Balance: ${starting_balance:,.2f}", "white")
+        cprint(f"   Current Balance:  ${current_balance:,.2f}", "white")
+        cprint(f"   Daily P&L:        ${daily_pnl:,.2f} ({daily_pnl_pct:+.2f}%)", "red")
+        cprint(f"   Limit:            ${limit_value:,.2f}", "white")
+        cprint(f"\n   ⛔ NO NEW TRADES ALLOWED TODAY", "red", attrs=['bold'])
+        if CLOSE_ON_DRAWDOWN:
+            cprint(f"   📤 Closing all positions...", "yellow")
+        cprint(f"{'='*60}\n", "red")
+
+    return result
+
+def reset_daily_drawdown():
+    """Manually reset the daily drawdown circuit breaker (use with caution)"""
+    from datetime import date
+
+    current_balance = get_current_balance()
+    if current_balance is None:
+        cprint("❌ Could not get current balance to reset", "red")
+        return False
+
+    state = {
+        'date': date.today().isoformat(),
+        'starting_balance': current_balance,
+        'circuit_breaker_triggered': False,
+        'triggered_at': None
+    }
+    save_drawdown_state(state)
+    cprint(f"✅ Daily drawdown reset - New starting balance: ${current_balance:,.2f}", "green")
+    return True
+
+def get_drawdown_status():
+    """Get current drawdown status for dashboard display"""
+    result = check_daily_drawdown()
+    return {
+        'enabled': DAILY_DRAWDOWN_ENABLED,
+        'trading_allowed': result['trading_allowed'],
+        'daily_pnl': result['daily_pnl'],
+        'daily_pnl_pct': result['daily_pnl_pct'],
+        'limit_usd': DAILY_DRAWDOWN_LIMIT_USD,
+        'limit_pct': DAILY_DRAWDOWN_LIMIT_PCT,
+        'use_pct': USE_DAILY_DRAWDOWN_PCT,
+        'warning': result['warning'],
+        'circuit_breaker_triggered': result['circuit_breaker_triggered'],
+        'starting_balance': result['starting_balance'],
+        'current_balance': result['current_balance'],
+        'message': result['message']
+    }
+
+# ============================================================================
+# 📊 ATR-BASED DYNAMIC STOPS
+# ============================================================================
+
+def calculate_atr(ohlcv_data, period=ATR_PERIOD):
+    """
+    Calculate Average True Range (ATR) from OHLCV data.
+
+    Args:
+        ohlcv_data: DataFrame with 'high', 'low', 'close' columns
+        period: ATR period (default 14)
+
+    Returns:
+        float: Current ATR value, or None if calculation fails
+    """
+    try:
+        import pandas as pd
+
+        if ohlcv_data is None or len(ohlcv_data) < period + 1:
+            return None
+
+        df = ohlcv_data.copy()
+
+        # Calculate True Range components
+        df['prev_close'] = df['close'].shift(1)
+        df['tr1'] = df['high'] - df['low']  # Current high - current low
+        df['tr2'] = abs(df['high'] - df['prev_close'])  # Current high - previous close
+        df['tr3'] = abs(df['low'] - df['prev_close'])   # Current low - previous close
+
+        # True Range is max of all three
+        df['true_range'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+
+        # ATR is the moving average of True Range
+        df['atr'] = df['true_range'].rolling(window=period).mean()
+
+        # Return the most recent ATR value
+        atr_value = df['atr'].iloc[-1]
+
+        if pd.isna(atr_value):
+            return None
+
+        return float(atr_value)
+
+    except Exception as e:
+        cprint(f"⚠️ Error calculating ATR: {e}", "yellow")
+        return None
+
+
+def calculate_atr_percentage(ohlcv_data, period=ATR_PERIOD):
+    """
+    Calculate ATR as a percentage of current price.
+
+    Returns:
+        float: ATR as percentage (e.g., 2.5 = 2.5%)
+    """
+    try:
+        atr = calculate_atr(ohlcv_data, period)
+        if atr is None:
+            return None
+
+        current_price = float(ohlcv_data['close'].iloc[-1])
+        if current_price <= 0:
+            return None
+
+        atr_pct = (atr / current_price) * 100
+        return atr_pct
+
+    except Exception as e:
+        cprint(f"⚠️ Error calculating ATR percentage: {e}", "yellow")
+        return None
+
+
+def get_atr_stop_levels(entry_price, atr_value, is_long=True, current_price=None):
+    """
+    Calculate ATR-based stop loss and take profit levels.
+
+    Args:
+        entry_price: Position entry price
+        atr_value: Current ATR value (in price units)
+        is_long: True for long positions, False for shorts
+        current_price: Current market price (optional, for percentage calculation)
+
+    Returns:
+        dict: {
+            'stop_loss': float,      # Stop loss price
+            'take_profit': float,    # Take profit price
+            'sl_distance': float,    # Distance in price units
+            'tp_distance': float,    # Distance in price units
+            'sl_pct': float,         # Stop loss as percentage
+            'tp_pct': float,         # Take profit as percentage
+            'atr': float,            # ATR value used
+            'atr_pct': float,        # ATR as percentage of price
+        }
+    """
+    if atr_value is None or atr_value <= 0:
+        return None
+
+    price_ref = current_price if current_price else entry_price
+
+    # Calculate distances
+    sl_distance = atr_value * ATR_SL_MULTIPLIER
+    tp_distance = atr_value * ATR_TP_MULTIPLIER
+
+    # Calculate percentages
+    sl_pct = (sl_distance / price_ref) * 100
+    tp_pct = (tp_distance / price_ref) * 100
+    atr_pct = (atr_value / price_ref) * 100
+
+    # Apply min/max constraints to stop loss percentage
+    sl_pct_constrained = max(ATR_MIN_SL_PCT, min(ATR_MAX_SL_PCT, sl_pct))
+
+    # Recalculate SL distance if constrained
+    if sl_pct != sl_pct_constrained:
+        sl_distance = price_ref * (sl_pct_constrained / 100)
+        cprint(f"   📊 ATR SL adjusted: {sl_pct:.2f}% → {sl_pct_constrained:.2f}% (within {ATR_MIN_SL_PCT}-{ATR_MAX_SL_PCT}% bounds)", "yellow")
+        sl_pct = sl_pct_constrained
+
+    # Calculate stop/target prices based on direction
+    if is_long:
+        stop_loss = entry_price - sl_distance
+        take_profit = entry_price + tp_distance
+    else:
+        stop_loss = entry_price + sl_distance
+        take_profit = entry_price - tp_distance
+
+    return {
+        'stop_loss': stop_loss,
+        'take_profit': take_profit,
+        'sl_distance': sl_distance,
+        'tp_distance': tp_distance,
+        'sl_pct': sl_pct,
+        'tp_pct': tp_pct,
+        'atr': atr_value,
+        'atr_pct': atr_pct,
+    }
+
+
+def get_atr_trailing_distance(atr_value, current_price):
+    """
+    Calculate ATR-based trailing stop distance.
+
+    Args:
+        atr_value: Current ATR value
+        current_price: Current market price
+
+    Returns:
+        tuple: (distance_pct, distance_price) or (None, None) if calculation fails
+    """
+    if atr_value is None or current_price <= 0:
+        return None, None
+
+    trail_distance = atr_value * ATR_TRAILING_MULTIPLIER
+    trail_pct = (trail_distance / current_price) * 100
+
+    return trail_pct, trail_distance
+
+
+def get_dynamic_stop_levels(symbol, entry_price, is_long=True, ohlcv_data=None):
+    """
+    Get stop loss and take profit levels - either ATR-based or fixed percentage.
+
+    This is the main function to call for getting stop levels.
+
+    Args:
+        symbol: Trading symbol (for fetching data if needed)
+        entry_price: Position entry price
+        is_long: True for long positions, False for shorts
+        ohlcv_data: Optional OHLCV DataFrame. If None, will try to fetch.
+
+    Returns:
+        dict: Stop levels with 'stop_loss', 'take_profit', 'sl_pct', 'tp_pct', 'method'
+    """
+    result = {
+        'stop_loss': None,
+        'take_profit': None,
+        'sl_pct': STOP_LOSS_PERCENTAGE,
+        'tp_pct': TAKE_PROFIT_PERCENTAGE,
+        'method': 'fixed',
+        'atr': None,
+        'atr_pct': None,
+    }
+
+    # Calculate fixed percentage stops as fallback
+    if is_long:
+        result['stop_loss'] = entry_price * (1 - STOP_LOSS_PERCENTAGE / 100)
+        result['take_profit'] = entry_price * (1 + TAKE_PROFIT_PERCENTAGE / 100)
+    else:
+        result['stop_loss'] = entry_price * (1 + STOP_LOSS_PERCENTAGE / 100)
+        result['take_profit'] = entry_price * (1 - TAKE_PROFIT_PERCENTAGE / 100)
+
+    # If ATR stops disabled, return fixed percentage
+    if not USE_ATR_STOPS:
+        cprint(f"   📊 Using fixed stops: SL={STOP_LOSS_PERCENTAGE}%, TP={TAKE_PROFIT_PERCENTAGE}%", "cyan")
+        return result
+
+    # Try to get OHLCV data if not provided
+    if ohlcv_data is None:
+        try:
+            if EXCHANGE == "HYPERLIQUID":
+                # get_data returns OHLCV with indicators, we need at least ATR_PERIOD + 1 bars
+                ohlcv_data = n.get_data(symbol, timeframe=DATA_TIMEFRAME, bars=ATR_PERIOD + 10, add_indicators=False)
+        except Exception as e:
+            cprint(f"⚠️ Could not fetch OHLCV for ATR calculation: {e}", "yellow")
+
+    if ohlcv_data is None or len(ohlcv_data) < ATR_PERIOD + 1:
+        cprint(f"⚠️ Insufficient data for ATR ({len(ohlcv_data) if ohlcv_data is not None else 0} bars), using fixed stops", "yellow")
+        return result
+
+    # Calculate ATR
+    atr = calculate_atr(ohlcv_data, ATR_PERIOD)
+    if atr is None:
+        cprint(f"⚠️ ATR calculation failed, using fixed stops", "yellow")
+        return result
+
+    # Get ATR-based levels
+    atr_levels = get_atr_stop_levels(entry_price, atr, is_long, entry_price)
+    if atr_levels is None:
+        return result
+
+    # Update result with ATR-based values
+    result.update({
+        'stop_loss': atr_levels['stop_loss'],
+        'take_profit': atr_levels['take_profit'],
+        'sl_pct': atr_levels['sl_pct'],
+        'tp_pct': atr_levels['tp_pct'],
+        'method': 'atr',
+        'atr': atr_levels['atr'],
+        'atr_pct': atr_levels['atr_pct'],
+    })
+
+    cprint(f"\n   📊 ATR-BASED DYNAMIC STOPS:", "cyan", attrs=['bold'])
+    cprint(f"      ATR({ATR_PERIOD}): ${atr:.4f} ({atr_levels['atr_pct']:.2f}% of price)", "white")
+    cprint(f"      Stop Loss: ${atr_levels['stop_loss']:.4f} (-{atr_levels['sl_pct']:.2f}%) [ATR × {ATR_SL_MULTIPLIER}]", "yellow")
+    cprint(f"      Take Profit: ${atr_levels['take_profit']:.4f} (+{atr_levels['tp_pct']:.2f}%) [ATR × {ATR_TP_MULTIPLIER}]", "green")
+    cprint(f"      Risk:Reward = 1:{ATR_TP_MULTIPLIER/ATR_SL_MULTIPLIER:.1f}", "white")
+
+    return result
+
+
+def parse_tpsl_recommendations(reasoning):
+    """Parse TP/SL recommendations from AI analysis text"""
+    import re
+    recommendations = {}
+
+    if not reasoning:
+        return recommendations
+
+    # Look for TP_SL_RECOMMENDATIONS section
+    # Pattern: CONSERVATIVE: TP=$X.XX (+X%), SL=$X.XX (-X%)
+    patterns = {
+        'conservative': r'CONSERVATIVE[:\s]+TP=\$?([\d.]+)[^,]*,\s*SL=\$?([\d.]+)',
+        'moderate': r'MODERATE[:\s]+TP=\$?([\d.]+)[^,]*,\s*SL=\$?([\d.]+)',
+        'aggressive': r'AGGRESSIVE[:\s]+TP=\$?([\d.]+)[^,]*,\s*SL=\$?([\d.]+)',
+    }
+
+    for level, pattern in patterns.items():
+        match = re.search(pattern, reasoning, re.IGNORECASE)
+        if match:
+            try:
+                recommendations[level] = {
+                    'tp': float(match.group(1)),
+                    'sl': float(match.group(2))
+                }
+            except (ValueError, IndexError):
+                pass
+
+    return recommendations
+
+
 def save_analysis_report(symbol, action, confidence, reasoning):
     """Save analysis report for dashboard watchlist display"""
     try:
@@ -380,11 +877,15 @@ def save_analysis_report(symbol, action, confidence, reasoning):
             with open(ANALYSIS_REPORTS_FILE, 'r') as f:
                 reports = json.load(f)
 
+        # Parse TP/SL recommendations from reasoning
+        tpsl_recommendations = parse_tpsl_recommendations(reasoning)
+
         # Update/add report for this symbol
         reports[symbol] = {
             "action": action,
             "confidence": confidence,
             "analysis": reasoning[:1500] if reasoning else "No analysis available",
+            "tpsl_recommendations": tpsl_recommendations,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -392,8 +893,127 @@ def save_analysis_report(symbol, action, confidence, reasoning):
         with open(ANALYSIS_REPORTS_FILE, 'w') as f:
             json.dump(reports, f, indent=4)
 
+        # Auto TP/SL if enabled
+        if tpsl_recommendations and action == "BUY":
+            auto_set_tpsl_from_analysis(symbol, tpsl_recommendations)
+
     except Exception as e:
         print(f"⚠️ Could not save analysis report: {e}")
+
+
+def auto_set_tpsl_from_analysis(symbol, recommendations, ohlcv_data=None):
+    """Automatically set TP/SL based on AI analysis recommendations or ATR."""
+    try:
+        # Load auto TP/SL settings
+        settings_file = Path(__file__).parent.parent / "data" / "dashboard_settings.json"
+        if not settings_file.exists():
+            return
+
+        with open(settings_file, 'r') as f:
+            settings = json.load(f)
+
+        if not settings.get("auto_tpsl_enabled", False):
+            return
+
+        mode = settings.get("auto_tpsl_mode", "moderate")
+        max_sl_pct = settings.get("auto_tpsl_max_sl", 7)
+        use_atr = settings.get("auto_tpsl_use_atr", USE_ATR_STOPS)  # Use ATR if enabled
+
+        # Check if we have a position first
+        import eth_account
+        from hyperliquid.info import Info
+        from hyperliquid.utils import constants
+        from dotenv import load_dotenv
+        import os
+
+        load_dotenv()
+        secret_key = os.getenv('HYPER_LIQUID_ETH_PRIVATE_KEY')
+        if not secret_key:
+            return
+
+        account = eth_account.Account.from_key(secret_key)
+        info = Info(constants.MAINNET_API_URL, skip_ws=True)
+
+        # Get position
+        user_state = info.user_state(account.address)
+        position = None
+        for pos in user_state.get('assetPositions', []):
+            p = pos.get('position', {})
+            if p.get('coin') == symbol and float(p.get('szi', 0)) != 0:
+                position = p
+                break
+
+        if not position:
+            cprint(f"   ℹ️ No position for {symbol}, skipping auto TP/SL", "white")
+            return
+
+        entry_price = float(position.get('entryPx', 0))
+        size = float(position.get('szi', 0))
+        is_long = size > 0
+
+        # Determine TP/SL prices - use ATR if enabled, otherwise use AI recommendations
+        if use_atr and USE_ATR_STOPS:
+            # Use ATR-based dynamic stops
+            cprint(f"\n   📊 Using ATR-based dynamic stops for {symbol}...", "cyan")
+            stop_levels = get_dynamic_stop_levels(symbol, entry_price, is_long, ohlcv_data)
+
+            if stop_levels['method'] == 'atr':
+                tp_price = stop_levels['take_profit']
+                sl_price = stop_levels['stop_loss']
+                sl_pct_from_entry = stop_levels['sl_pct']
+                cprint(f"      ATR Method: SL={sl_pct_from_entry:.2f}%, TP={stop_levels['tp_pct']:.2f}%", "white")
+            else:
+                # ATR calculation failed, fall back to AI recommendations
+                cprint(f"   ⚠️ ATR calculation failed, using AI recommendations", "yellow")
+                use_atr = False
+
+        if not use_atr:
+            # Use AI recommendations
+            if mode not in recommendations:
+                mode = next(iter(recommendations.keys()), None)
+                if not mode:
+                    cprint(f"   ⚠️ No TP/SL recommendations available for {symbol}", "yellow")
+                    return
+
+            rec = recommendations[mode]
+            tp_price = rec.get('tp')
+            sl_price = rec.get('sl')
+
+            if not tp_price or not sl_price:
+                return
+
+            # Calculate SL percentage from entry
+            if is_long:
+                sl_pct_from_entry = ((entry_price - sl_price) / entry_price) * 100
+            else:
+                sl_pct_from_entry = ((sl_price - entry_price) / entry_price) * 100
+
+        # Enforce max SL limit
+        if sl_pct_from_entry > max_sl_pct:
+            cprint(f"   ⚠️ Recommended SL ({sl_pct_from_entry:.1f}%) exceeds max ({max_sl_pct}%), adjusting...", "yellow")
+            if is_long:
+                sl_price = entry_price * (1 - max_sl_pct / 100)
+            else:
+                sl_price = entry_price * (1 + max_sl_pct / 100)
+
+        # Set TP/SL (n is already imported at module level)
+        method_display = "ATR-based" if (use_atr and USE_ATR_STOPS) else f"{mode} mode"
+        cprint(f"\n🎯 Auto TP/SL for {symbol} ({method_display})", "cyan", attrs=['bold'])
+
+        # Calculate percentages for display
+        if is_long:
+            tp_pct = ((tp_price - entry_price) / entry_price) * 100
+            sl_pct = ((entry_price - sl_price) / entry_price) * 100
+        else:
+            tp_pct = ((entry_price - tp_price) / entry_price) * 100
+            sl_pct = ((sl_price - entry_price) / entry_price) * 100
+
+        result = n.place_tp_sl_orders(symbol, entry_price, abs(size), is_long, tp_pct, sl_pct, account)
+        cprint(f"   ✅ Auto TP/SL set: TP=${tp_price:.6f} (+{tp_pct:.1f}%), SL=${sl_price:.6f} (-{sl_pct:.1f}%)", "green")
+
+    except Exception as e:
+        cprint(f"   ❌ Auto TP/SL error: {e}", "red")
+
 
 def play_trade_sound(sound_type="open", pnl=None):
     """Play audible notification for trade events"""
@@ -463,7 +1083,25 @@ Respond in this exact format:
    - Market conditions
    - Confidence level (as a percentage, e.g. 75%)
 
-Remember: 
+3. REQUIRED: Provide TP/SL recommendations based on technical levels:
+   TP_SL_RECOMMENDATIONS:
+   CONSERVATIVE: TP=$X.XX (+X%), SL=$X.XX (-X%)
+   MODERATE: TP=$X.XX (+X%), SL=$X.XX (-X%)
+   AGGRESSIVE: TP=$X.XX (+X%), SL=$X.XX (-X%)
+
+   Base these on:
+   - Support levels (SMA20, SMA50, SMA200, Fibonacci retracements)
+   - Resistance levels (recent highs, Bollinger upper band)
+   - ATR for volatility-adjusted stops (recommended: SL = 2×ATR, TP = 3×ATR)
+   - Recent swing highs/lows
+
+4. ATR-BASED STOP GUIDANCE:
+   - If ATR is HIGH (>3% of price): Use WIDER stops to avoid noise
+   - If ATR is LOW (<1.5% of price): Use TIGHTER stops for protection
+   - Minimum SL: 1% | Maximum SL: 7% (regardless of ATR)
+   - Risk:Reward should be at least 1:1.5
+
+Remember:
 - Moon Dev always prioritizes risk management! 🛡️
 - Never trade USDC or SOL directly
 - Consider both technical and strategy signals
@@ -518,6 +1156,24 @@ import sys
 import pandas as pd
 import json
 from termcolor import cprint
+
+# Add project root to path for imports
+_project_root = str(Path(__file__).parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+# Import alerts module
+try:
+    from src.alerts import (
+        alert_position_opened, alert_position_closed,
+        alert_stop_loss_hit, alert_take_profit_hit,
+        alert_trailing_stop_hit, alert_drawdown_warning,
+        alert_circuit_breaker, alert_critical_error
+    )
+    ALERTS_AVAILABLE = True
+except ImportError:
+    ALERTS_AVAILABLE = False
+    cprint("⚠️ Alerts module not available", "yellow")
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import time
@@ -674,6 +1330,10 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
                         cprint(f"💰 Locked in profit from peak of {highest_pnl:.2f}%!", "green")
                         cprint(f"🔄 Closing position...", "yellow")
 
+                        # 🔔 Send alert
+                        if ALERTS_AVAILABLE:
+                            alert_trailing_stop_hit(token, pnl_usd, pnl_pct, highest_pnl)
+
                         # Close position
                         if position['position_amount'] > 0:
                             n.limit_sell(token, position_size, slippage=0, leverage=LEVERAGE)
@@ -688,6 +1348,11 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
                     cprint(f"🛑 STOP LOSS HIT! P&L: {pnl_pct:.2f}% (target: -{STOP_LOSS_PERCENTAGE}%)", "red", attrs=['bold'])
                     cprint(f"🔄 Closing position with limit orders...", "yellow")
 
+                    # 🔔 Send alert
+                    if ALERTS_AVAILABLE:
+                        mid_price = position.get('mark_price', entry_px)
+                        alert_stop_loss_hit(token, pnl_usd, pnl_pct, entry_px, mid_price)
+
                     # Close position using limit sell (for longs) or limit buy (for shorts)
                     if position['position_amount'] > 0:
                         n.limit_sell(token, position_size, slippage=0, leverage=LEVERAGE)
@@ -701,6 +1366,11 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
                 if pnl_pct >= TAKE_PROFIT_PERCENTAGE:
                     cprint(f"🎯 TAKE PROFIT HIT! P&L: {pnl_pct:.2f}% (target: +{TAKE_PROFIT_PERCENTAGE}%)", "green", attrs=['bold'])
                     cprint(f"🔄 Closing position with limit orders...", "yellow")
+
+                    # 🔔 Send alert
+                    if ALERTS_AVAILABLE:
+                        mid_price = position.get('mark_price', entry_px)
+                        alert_take_profit_hit(token, pnl_usd, pnl_pct, entry_px, mid_price)
 
                     # Close position using limit sell (for longs) or limit buy (for shorts)
                     if position['position_amount'] > 0:
@@ -1922,6 +2592,24 @@ Example format:
         try:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cprint(f"\n⏰ AI Agent Run Starting at {current_time}", "white", "on_green")
+
+            # 🛑 CHECK DAILY DRAWDOWN CIRCUIT BREAKER
+            drawdown_check = check_daily_drawdown()
+            if drawdown_check['warning']:
+                cprint(f"\n{drawdown_check['message']}", "yellow", attrs=['bold'])
+
+            if not drawdown_check['trading_allowed']:
+                cprint(f"\n🛑 TRADING HALTED: {drawdown_check['message']}", "red", attrs=['bold'])
+                cprint(f"   Daily P&L: ${drawdown_check['daily_pnl']:,.2f} ({drawdown_check['daily_pnl_pct']:+.2f}%)", "red")
+                cprint(f"   To reset: Call reset_daily_drawdown() or wait for new trading day", "yellow")
+                return  # Exit without trading
+            else:
+                # Show daily P&L status
+                daily_pnl = drawdown_check['daily_pnl']
+                daily_pnl_pct = drawdown_check['daily_pnl_pct']
+                limit = drawdown_check['limit'] if not USE_DAILY_DRAWDOWN_PCT else drawdown_check['limit_pct']
+                color = "green" if daily_pnl >= 0 else "yellow"
+                cprint(f"📊 Daily P&L: ${daily_pnl:,.2f} ({daily_pnl_pct:+.2f}%) | Limit: ${DAILY_DRAWDOWN_LIMIT_USD}", color)
 
             # Reset recommendations for this cycle (prevents accumulation across cycles)
             self.recommendations_df = pd.DataFrame(columns=['token', 'action', 'confidence', 'reasoning'])

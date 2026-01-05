@@ -493,6 +493,219 @@ def verify_system_state(hl_state: dict) -> list[dict]:
     return issues
 
 
+def verify_auto_tpsl(hl_state: dict) -> list[dict]:
+    """Verify auto TP/SL is working correctly:
+    1. Check if auto TP/SL is enabled but not setting orders
+    2. Compare actual TP/SL with analysis recommendations
+    3. Check if TP/SL exceeds max SL setting
+    """
+    issues = []
+
+    if not hl_state:
+        return issues
+
+    try:
+        # Load auto TP/SL settings
+        settings_file = Path(__file__).parent.parent / "data" / "dashboard_settings.json"
+        if not settings_file.exists():
+            return issues
+
+        with open(settings_file, 'r') as f:
+            settings = json.load(f)
+
+        auto_enabled = settings.get("auto_tpsl_enabled", False)
+        max_sl_pct = settings.get("auto_tpsl_max_sl", 7)
+        tpsl_mode = settings.get("auto_tpsl_mode", "moderate")
+
+        if not auto_enabled:
+            return issues  # Auto TP/SL not enabled, skip checks
+
+        # Load analysis reports for recommendations
+        analysis_file = Path(__file__).parent.parent / "data" / "analysis_reports.json"
+        analysis_reports = {}
+        if analysis_file.exists():
+            with open(analysis_file, 'r') as f:
+                analysis_reports = json.load(f)
+
+        orders = hl_state.get('open_orders', [])
+        positions = hl_state.get('positions', [])
+
+        for pos in positions:
+            symbol = pos['symbol']
+            size = pos['size']
+            entry = pos['entry']
+            is_long = size > 0
+
+            # Get analysis for this symbol
+            analysis = analysis_reports.get(symbol, {})
+            action = analysis.get('action', '')
+            recommendations = analysis.get('tpsl_recommendations', {})
+
+            # Only check if analysis was bullish (BUY)
+            if action != 'BUY':
+                continue
+
+            # Get recommended TP/SL for selected mode
+            rec = recommendations.get(tpsl_mode, {})
+            rec_tp = rec.get('tp')
+            rec_sl = rec.get('sl')
+
+            if not rec_tp or not rec_sl:
+                issues.append({
+                    'line': f'{symbol}: Auto TP/SL enabled but no recommendations',
+                    'context': f'Auto TP/SL is ON but analysis for {symbol} has no TP/SL recommendations.\nMode: {tpsl_mode}\nAnalysis action: {action}',
+                    'priority': PRIORITY_HIGH,
+                    'category': 'Auto TP/SL issue',
+                    'source': 'auto_tpsl_verification',
+                    'fixed_title': f'{symbol} no TPSL recs',
+                })
+                continue
+
+            # Find actual TP/SL orders
+            close_side = 'sell' if is_long else 'buy'
+            close_orders = [o for o in orders
+                          if o['symbol'] == symbol
+                          and o['side'] == close_side
+                          and o.get('reduce_only', False)]
+
+            actual_tp = None
+            actual_sl = None
+            for o in close_orders:
+                try:
+                    price = float(o['price'])
+                    if is_long:
+                        if price > entry:
+                            actual_tp = price
+                        else:
+                            actual_sl = price
+                    else:
+                        if price < entry:
+                            actual_tp = price
+                        else:
+                            actual_sl = price
+                except (ValueError, TypeError):
+                    pass
+
+            # Check if actual TP/SL matches recommendations (within 2% tolerance)
+            if actual_tp and rec_tp:
+                tp_diff_pct = abs(actual_tp - rec_tp) / rec_tp * 100
+                if tp_diff_pct > 2:
+                    issues.append({
+                        'line': f'{symbol}: TP differs from recommendation',
+                        'context': f'Actual TP: ${actual_tp:.6f}\nRecommended ({tpsl_mode}): ${rec_tp:.6f}\nDifference: {tp_diff_pct:.1f}%\n\nConsider updating TP to match analysis.',
+                        'priority': PRIORITY_MEDIUM,
+                        'category': 'TP/SL mismatch',
+                        'source': 'auto_tpsl_verification',
+                        'fixed_title': f'{symbol} TP mismatch',
+                    })
+
+            if actual_sl and rec_sl:
+                sl_diff_pct = abs(actual_sl - rec_sl) / rec_sl * 100
+                if sl_diff_pct > 2:
+                    issues.append({
+                        'line': f'{symbol}: SL differs from recommendation',
+                        'context': f'Actual SL: ${actual_sl:.6f}\nRecommended ({tpsl_mode}): ${rec_sl:.6f}\nDifference: {sl_diff_pct:.1f}%\n\nConsider updating SL to match analysis.',
+                        'priority': PRIORITY_MEDIUM,
+                        'category': 'TP/SL mismatch',
+                        'source': 'auto_tpsl_verification',
+                        'fixed_title': f'{symbol} SL mismatch',
+                    })
+
+            # Check if SL exceeds max allowed
+            if actual_sl:
+                if is_long:
+                    actual_sl_pct = ((entry - actual_sl) / entry) * 100
+                else:
+                    actual_sl_pct = ((actual_sl - entry) / entry) * 100
+
+                if actual_sl_pct > max_sl_pct:
+                    issues.append({
+                        'line': f'{symbol}: SL exceeds max limit ({actual_sl_pct:.1f}% > {max_sl_pct}%)',
+                        'context': f'Entry: ${entry:.6f}\nActual SL: ${actual_sl:.6f} ({actual_sl_pct:.1f}%)\nMax allowed: {max_sl_pct}%\n\nSL should be adjusted to respect max loss setting.',
+                        'priority': PRIORITY_HIGH,
+                        'category': 'SL exceeds max',
+                        'source': 'auto_tpsl_verification',
+                        'fixed_title': f'{symbol} SL over max',
+                    })
+
+    except Exception as e:
+        cprint(f"Error in auto TP/SL verification: {e}", "red")
+
+    return issues
+
+
+def verify_daily_drawdown() -> list[dict]:
+    """Verify daily drawdown status and alert if approaching limit"""
+    issues = []
+
+    try:
+        # Load drawdown state
+        drawdown_state_file = Path(__file__).parent.parent / "data" / "drawdown_state.json"
+        settings_file = Path(__file__).parent.parent / "data" / "dashboard_settings.json"
+
+        if not drawdown_state_file.exists():
+            return issues
+
+        with open(drawdown_state_file, 'r') as f:
+            state = json.load(f)
+
+        # Check if circuit breaker is triggered
+        if state.get('circuit_breaker_triggered'):
+            issues.append({
+                'line': f"Circuit breaker triggered at {state.get('triggered_at', 'unknown')}",
+                'context': f"Daily drawdown limit was reached. Trading halted.\nDate: {state.get('date')}\nStarting balance: ${state.get('starting_balance', 0):,.2f}",
+                'priority': PRIORITY_CRITICAL,
+                'category': 'Circuit breaker active',
+                'source': 'drawdown_verification',
+                'fixed_title': 'Trading halted - drawdown limit',
+            })
+            return issues
+
+        # Get current balance to check live status
+        hl_state = get_hyperliquid_state()
+        if not hl_state:
+            return issues
+
+        current_balance = hl_state.get('account_value', 0)
+        starting_balance = state.get('starting_balance', current_balance)
+        daily_pnl = current_balance - starting_balance
+        daily_pnl_pct = (daily_pnl / starting_balance * 100) if starting_balance > 0 else 0
+
+        # Load settings to get limit
+        limit_usd = 50  # Default
+        warning_pct = 70
+        try:
+            # Try to import from trading_agent for consistency
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent))
+            from trading_agent import DAILY_DRAWDOWN_LIMIT_USD, DRAWDOWN_WARNING_PCT, DAILY_DRAWDOWN_ENABLED
+            limit_usd = DAILY_DRAWDOWN_LIMIT_USD
+            warning_pct = DRAWDOWN_WARNING_PCT
+            if not DAILY_DRAWDOWN_ENABLED:
+                return issues
+        except ImportError:
+            pass
+
+        warning_threshold = -limit_usd * (warning_pct / 100)
+
+        # Check if approaching limit (warning zone)
+        if daily_pnl <= warning_threshold:
+            pct_of_limit = abs(daily_pnl / limit_usd * 100)
+            issues.append({
+                'line': f"Daily loss ${abs(daily_pnl):,.2f} is {pct_of_limit:.0f}% of limit",
+                'context': f"Daily P&L: ${daily_pnl:,.2f} ({daily_pnl_pct:+.2f}%)\nLimit: ${limit_usd:,.2f}\nApproaching circuit breaker threshold.\n\nConsider reducing position sizes or closing losing trades.",
+                'priority': PRIORITY_HIGH if pct_of_limit >= 90 else PRIORITY_MEDIUM,
+                'category': 'Drawdown warning',
+                'source': 'drawdown_verification',
+                'fixed_title': f'Daily loss at {pct_of_limit:.0f}% of limit',
+            })
+
+    except Exception as e:
+        cprint(f"Error in drawdown verification: {e}", "red")
+
+    return issues
+
+
 # ============================================================================
 # AI ANALYSIS
 # ============================================================================
@@ -756,6 +969,15 @@ def run_scan():
         # Check for system-level issues (TP/SL, duplicates)
         system_issues = verify_system_state(hl_state)
         all_issues.extend(system_issues)
+
+        # Check auto TP/SL accuracy
+        cprint("\n🎯 VERIFYING AUTO TP/SL...", "white")
+        auto_tpsl_issues = verify_auto_tpsl(hl_state)
+        if auto_tpsl_issues:
+            cprint(f"   → Found {len(auto_tpsl_issues)} auto TP/SL issues", "yellow")
+            all_issues.extend(auto_tpsl_issues)
+        else:
+            cprint("   ✓ Auto TP/SL OK", "green")
     else:
         cprint("   ⚠️ Could not connect to HyperLiquid", "yellow")
 
@@ -767,6 +989,19 @@ def run_scan():
         all_issues.extend(config_issues)
     else:
         cprint("   ✓ Config OK", "green")
+
+    # 2c. Check daily drawdown
+    cprint("\n🛑 VERIFYING DAILY DRAWDOWN...", "white")
+    drawdown_issues = verify_daily_drawdown()
+    if drawdown_issues:
+        for issue in drawdown_issues:
+            if issue['priority'] == PRIORITY_CRITICAL:
+                cprint(f"   ⛔ {issue['line']}", "red")
+            else:
+                cprint(f"   ⚠️ {issue['line']}", "yellow")
+        all_issues.extend(drawdown_issues)
+    else:
+        cprint("   ✓ Daily drawdown OK", "green")
 
     # 3. AI Analysis
     if all_issues:

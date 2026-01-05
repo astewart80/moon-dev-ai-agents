@@ -170,7 +170,9 @@ def get_account_info():
 
         margin_summary = user_state.get("marginSummary", {})
         account_value = float(margin_summary.get("accountValue", 0))
+        margin_used = float(margin_summary.get("totalMarginUsed", 0))
         withdrawable = float(margin_summary.get("withdrawable", 0))
+        available_margin = account_value - margin_used
 
         # Get all open orders including trigger orders (TP/SL)
         try:
@@ -258,6 +260,7 @@ def get_account_info():
         return {
             "equity": equity,
             "balance": balance,
+            "available_margin": available_margin,
             "unrealized_pnl": total_unrealized_pnl,
             "withdrawable": withdrawable,
             "positions": positions,
@@ -522,6 +525,193 @@ async def get_fear_greed():
         print(f"Error fetching Fear & Greed: {e}")
     return {"value": 0, "label": "Error", "timestamp": ""}
 
+@app.get("/api/log-scanner-status")
+async def get_log_scanner_status():
+    """Check if log scanner agent is running"""
+    import subprocess
+    try:
+        result = subprocess.run(['pgrep', '-f', 'log_scanner_agent'], capture_output=True, text=True)
+        is_running = result.returncode == 0
+        pid = result.stdout.strip() if is_running else None
+
+        # Get last scan time from state file
+        last_scan = None
+        state_file = PROJECT_ROOT / "src" / "data" / "log_scanner" / "scanner_state.json"
+        if state_file.exists():
+            with open(state_file, 'r') as f:
+                state = json.load(f)
+                last_scan_ts = state.get('last_scan')
+                if last_scan_ts:
+                    from datetime import datetime
+                    last_scan = datetime.fromtimestamp(last_scan_ts).strftime('%H:%M:%S')
+
+        return {
+            "running": is_running,
+            "pid": pid,
+            "last_scan": last_scan
+        }
+    except Exception as e:
+        return {"running": False, "error": str(e)}
+
+@app.get("/api/daily-drawdown")
+async def get_daily_drawdown():
+    """Get daily drawdown status for circuit breaker"""
+    from datetime import date
+    try:
+        drawdown_file = PROJECT_ROOT / "src" / "data" / "drawdown_state.json"
+
+        # Default response
+        result = {
+            "enabled": True,
+            "trading_allowed": True,
+            "daily_pnl": 0,
+            "daily_pnl_pct": 0,
+            "limit_usd": 50,
+            "starting_balance": 0,
+            "current_balance": 0,
+            "circuit_breaker_triggered": False,
+            "triggered_at": None,
+            "date": date.today().isoformat()
+        }
+
+        # Try to get settings from trading_agent
+        try:
+            import sys
+            sys.path.insert(0, str(PROJECT_ROOT / "src" / "agents"))
+            from trading_agent import DAILY_DRAWDOWN_ENABLED, DAILY_DRAWDOWN_LIMIT_USD
+            result["enabled"] = DAILY_DRAWDOWN_ENABLED
+            result["limit_usd"] = DAILY_DRAWDOWN_LIMIT_USD
+        except:
+            pass
+
+        # Load state file
+        if drawdown_file.exists():
+            with open(drawdown_file, 'r') as f:
+                state = json.load(f)
+                result["starting_balance"] = state.get("starting_balance", 0)
+                result["circuit_breaker_triggered"] = state.get("circuit_breaker_triggered", False)
+                result["triggered_at"] = state.get("triggered_at")
+                result["date"] = state.get("date", date.today().isoformat())
+
+        # Get current balance
+        if HYPERLIQUID_AVAILABLE:
+            account = get_hyperliquid_account()
+            if account:
+                info = Info(constants.MAINNET_API_URL, skip_ws=True)
+                user_state = info.user_state(account.address)
+                current_balance = float(user_state.get('marginSummary', {}).get('accountValue', 0))
+                result["current_balance"] = current_balance
+
+                starting = result["starting_balance"] or current_balance
+                if starting > 0:
+                    daily_pnl = current_balance - starting
+                    daily_pnl_pct = (daily_pnl / starting) * 100
+                    result["daily_pnl"] = daily_pnl
+                    result["daily_pnl_pct"] = daily_pnl_pct
+                    result["trading_allowed"] = not result["circuit_breaker_triggered"]
+
+        return result
+    except Exception as e:
+        return {"error": str(e), "trading_allowed": True}
+
+@app.post("/api/daily-drawdown/reset")
+async def reset_daily_drawdown():
+    """Reset daily drawdown circuit breaker"""
+    from datetime import date
+    try:
+        if not HYPERLIQUID_AVAILABLE:
+            return {"success": False, "message": "HyperLiquid not available"}
+
+        account = get_hyperliquid_account()
+        if not account:
+            return {"success": False, "message": "No account configured"}
+
+        info = Info(constants.MAINNET_API_URL, skip_ws=True)
+        user_state = info.user_state(account.address)
+        current_balance = float(user_state.get('marginSummary', {}).get('accountValue', 0))
+
+        # Save new state
+        drawdown_file = PROJECT_ROOT / "src" / "data" / "drawdown_state.json"
+        state = {
+            "date": date.today().isoformat(),
+            "starting_balance": current_balance,
+            "circuit_breaker_triggered": False,
+            "triggered_at": None
+        }
+        with open(drawdown_file, 'w') as f:
+            json.dump(state, f, indent=2)
+
+        return {"success": True, "message": f"Reset successful. New starting balance: ${current_balance:,.2f}"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+# ============================================================================
+# ALERTS API
+# ============================================================================
+
+ALERT_SETTINGS_FILE = PROJECT_ROOT / "src" / "data" / "alert_settings.json"
+
+@app.get("/api/alerts")
+async def get_alert_settings():
+    """Get alert settings"""
+    try:
+        default_settings = {
+            "enabled": True,
+            "discord_webhook": "",
+            "alert_types": {
+                "position_opened": True,
+                "position_closed": True,
+                "stop_loss_hit": True,
+                "take_profit_hit": True,
+                "trailing_stop_hit": True,
+                "drawdown_warning": True,
+                "circuit_breaker": True,
+                "critical_error": True,
+                "daily_summary": True,
+            }
+        }
+
+        if ALERT_SETTINGS_FILE.exists():
+            with open(ALERT_SETTINGS_FILE, 'r') as f:
+                settings = json.load(f)
+                # Merge with defaults
+                for key in default_settings:
+                    if key not in settings:
+                        settings[key] = default_settings[key]
+                return settings
+
+        return default_settings
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/alerts")
+async def save_alert_settings(request: dict):
+    """Save alert settings"""
+    try:
+        ALERT_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(ALERT_SETTINGS_FILE, 'w') as f:
+            json.dump(request, f, indent=2)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/alerts/test")
+async def test_alert():
+    """Send a test alert"""
+    try:
+        import sys
+        sys.path.insert(0, str(PROJECT_ROOT / "src"))
+        from alerts import test_alerts, load_alert_settings
+
+        settings = load_alert_settings()
+        if not settings.get("discord_webhook"):
+            return {"success": False, "message": "No Discord webhook configured"}
+
+        success = test_alerts()
+        return {"success": success, "message": "Test alert sent!" if success else "Failed to send test alert"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
 @app.get("/api/prices")
 async def get_prices():
     """Get current prices and 24h change for tracked coins from HyperLiquid"""
@@ -673,6 +863,71 @@ async def get_confidence_endpoint():
         return {"min_confidence": 70}
     except:
         return {"min_confidence": 70}
+
+@app.get("/api/auto-tpsl")
+async def get_auto_tpsl():
+    """Get auto TP/SL settings including ATR configuration"""
+    try:
+        settings_file = PROJECT_ROOT / "src" / "data" / "dashboard_settings.json"
+        if settings_file.exists():
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                return {
+                    "enabled": settings.get("auto_tpsl_enabled", False),
+                    "max_sl": settings.get("auto_tpsl_max_sl", 7),
+                    "mode": settings.get("auto_tpsl_mode", "moderate"),
+                    # ATR settings
+                    "use_atr": settings.get("auto_tpsl_use_atr", False),
+                    "atr_period": settings.get("atr_period", 14),
+                    "atr_sl_multiplier": settings.get("atr_sl_multiplier", 2.0),
+                    "atr_tp_multiplier": settings.get("atr_tp_multiplier", 3.0),
+                    "atr_min_sl": settings.get("atr_min_sl", 1.0),
+                }
+        return {
+            "enabled": False, "max_sl": 7, "mode": "moderate",
+            "use_atr": False, "atr_period": 14, "atr_sl_multiplier": 2.0,
+            "atr_tp_multiplier": 3.0, "atr_min_sl": 1.0
+        }
+    except:
+        return {
+            "enabled": False, "max_sl": 7, "mode": "moderate",
+            "use_atr": False, "atr_period": 14, "atr_sl_multiplier": 2.0,
+            "atr_tp_multiplier": 3.0, "atr_min_sl": 1.0
+        }
+
+@app.post("/api/auto-tpsl")
+async def save_auto_tpsl(request: dict):
+    """Save auto TP/SL settings including ATR configuration"""
+    try:
+        settings_file = PROJECT_ROOT / "src" / "data" / "dashboard_settings.json"
+
+        # Load existing settings
+        settings = {}
+        if settings_file.exists():
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+
+        # Update auto TP/SL settings
+        settings["auto_tpsl_enabled"] = request.get("enabled", False)
+        settings["auto_tpsl_max_sl"] = request.get("max_sl", 7)
+        settings["auto_tpsl_mode"] = request.get("mode", "moderate")
+
+        # Update ATR settings
+        settings["auto_tpsl_use_atr"] = request.get("use_atr", False)
+        settings["atr_period"] = request.get("atr_period", 14)
+        settings["atr_sl_multiplier"] = request.get("atr_sl_multiplier", 2.0)
+        settings["atr_tp_multiplier"] = request.get("atr_tp_multiplier", 3.0)
+        settings["atr_min_sl"] = request.get("atr_min_sl", 1.0)
+
+        settings["updated_at"] = datetime.now().isoformat()
+
+        with open(settings_file, 'w') as f:
+            json.dump(settings, f, indent=4)
+
+        atr_status = "ATR stops enabled" if request.get("use_atr") else "Fixed % stops"
+        return {"success": True, "message": f"Auto TP/SL settings saved ({atr_status})"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 @app.get("/api/goals")
 async def get_goals():
@@ -905,68 +1160,150 @@ def clear_fills_for_symbol(symbol):
 
 @app.post("/api/force-buy/{symbol}")
 async def force_buy(symbol: str):
-    """Force buy a symbol with 25% of account"""
-    try:
-        if not HYPERLIQUID_AVAILABLE:
-            return {"success": False, "message": "HyperLiquid SDK not available"}
+    """Force buy a symbol with 25% of account - with detailed logging"""
+    import time
+    import traceback
+    start_time = time.time()
 
-        # Import nice_funcs
+    print(f"\n{'='*50}")
+    print(f"⚡ FORCE BUY REQUEST: {symbol}")
+    print(f"   Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    try:
+        # Step 1: Check HyperLiquid SDK
+        if not HYPERLIQUID_AVAILABLE:
+            print("   ❌ HyperLiquid SDK not available")
+            return {"success": False, "message": "HyperLiquid SDK not available"}
+        print("   ✓ HyperLiquid SDK available")
+
+        # Step 2: Import and get account
         import sys
         sys.path.insert(0, str(PROJECT_ROOT / "src"))
         import nice_funcs_hyperliquid as n
 
         account = n._get_account_from_env()
         if not account:
+            print("   ❌ No account configured (check HYPER_LIQUID_ETH_PRIVATE_KEY)")
             return {"success": False, "message": "No account configured"}
+        print(f"   ✓ Account loaded: {account.address[:10]}...")
 
-        # Get account value and calculate 25%
-        value = n.get_account_value(account)
+        # Step 3: Get account value
+        try:
+            value = n.get_account_value(account)
+            print(f"   ✓ Account value: ${value:.2f}")
+        except Exception as e:
+            print(f"   ❌ Failed to get account value: {e}")
+            return {"success": False, "message": f"Failed to get account value: {e}"}
+
+        # Step 4: Calculate position size
         usd_size = value * 0.25
+        print(f"   ✓ Trade size (25%): ${usd_size:.2f}")
 
-        # Execute market buy
-        result = n.market_buy(symbol, usd_size, account)
+        if usd_size < 10:
+            print(f"   ❌ Trade size ${usd_size:.2f} below $10 minimum")
+            return {"success": False, "message": f"Trade size ${usd_size:.2f} below $10 minimum"}
+
+        # Step 5: Read leverage setting
+        leverage = 20  # Default
+        try:
+            with open(TRADING_AGENT_FILE, 'r') as f:
+                content = f.read()
+                lev_match = re.search(r'LEVERAGE\s*=\s*(\d+)', content)
+                if lev_match:
+                    leverage = int(lev_match.group(1))
+        except:
+            pass
+        print(f"   ✓ Leverage setting: {leverage}x")
+
+        # Step 6: Set leverage
+        try:
+            n.set_leverage(symbol, leverage, account)
+            print(f"   ✓ Leverage set for {symbol}")
+        except Exception as e:
+            print(f"   ⚠️ Leverage warning: {e}")
+
+        # Step 7: Execute market buy
+        print(f"   → Executing market buy...")
+        try:
+            result = n.market_buy(symbol, usd_size, account)
+        except Exception as e:
+            print(f"   ❌ Market buy exception: {e}")
+            traceback.print_exc()
+            return {"success": False, "message": f"Market buy failed: {e}"}
+
+        # Step 8: Check result
+        print(f"   → Result: {result}")
 
         if result and result.get('status') == 'ok':
-            # Extract fill details from result
-            fill_data = result.get('response', {}).get('data', {}).get('statuses', [{}])[0].get('filled', {})
-            fill_qty = float(fill_data.get('totalSz', 0))
-            fill_price = float(fill_data.get('avgPx', 0))
+            statuses = result.get('response', {}).get('data', {}).get('statuses', [])
 
-            # Save individual fill
-            if fill_qty > 0 and fill_price > 0:
-                save_trade_fill(symbol, fill_qty, fill_price, "BUY")
+            if statuses and 'filled' in statuses[0]:
+                fill_data = statuses[0]['filled']
+                fill_qty = float(fill_data.get('totalSz', 0))
+                fill_price = float(fill_data.get('avgPx', 0))
 
-            # Read TP/SL settings from trading_agent.py
-            tp_pct = 10.0  # Default
-            sl_pct = 5.0   # Default
-            try:
-                with open(TRADING_AGENT_FILE, 'r') as f:
-                    content = f.read()
-                    tp_match = re.search(r'TAKE_PROFIT_PERCENTAGE\s*=\s*([\d.]+)', content)
-                    sl_match = re.search(r'STOP_LOSS_PERCENTAGE\s*=\s*([\d.]+)', content)
-                    if tp_match:
-                        tp_pct = float(tp_match.group(1))
-                    if sl_match:
-                        sl_pct = float(sl_match.group(1))
-            except:
-                pass
+                print(f"   ✅ FILLED: {fill_qty} {symbol} @ ${fill_price}")
 
-            # Set TP/SL
-            import time
-            time.sleep(2)
-            positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(symbol, account)
-            if im_in_pos and entry_px:
-                n.place_tp_sl_orders(symbol, float(entry_px), abs(float(pos_size)), True, tp_pct, sl_pct, account)
-            return {"success": True, "message": f"Bought {fill_qty:.5f} {symbol} @ ${fill_price:,.2f} (TP: +{tp_pct}%, SL: -{sl_pct}%)"}
+                # Save fill
+                if fill_qty > 0 and fill_price > 0:
+                    save_trade_fill(symbol, fill_qty, fill_price, "BUY")
+
+                # Read TP/SL settings
+                tp_pct = 10.0
+                sl_pct = 3.0
+                try:
+                    with open(TRADING_AGENT_FILE, 'r') as f:
+                        content = f.read()
+                        tp_match = re.search(r'TAKE_PROFIT_PERCENTAGE\s*=\s*([\d.]+)', content)
+                        sl_match = re.search(r'STOP_LOSS_PERCENTAGE\s*=\s*([\d.]+)', content)
+                        if tp_match:
+                            tp_pct = float(tp_match.group(1))
+                        if sl_match:
+                            sl_pct = float(sl_match.group(1))
+                except:
+                    pass
+
+                # TP/SL will be set by market_buy auto_tpsl
+
+                elapsed = time.time() - start_time
+                msg = f"Bought {fill_qty:.5f} {symbol} @ ${fill_price:,.4f} in {elapsed:.1f}s"
+                print(f"   ✅ {msg}")
+                print(f"{'='*50}\n")
+                return {"success": True, "message": msg}
+
+            elif statuses and 'error' in statuses[0]:
+                error = statuses[0]['error']
+                print(f"   ❌ Order error: {error}")
+                print(f"{'='*50}\n")
+                return {"success": False, "message": f"Order rejected: {error}"}
+
+            else:
+                print(f"   ❌ Unexpected status: {statuses}")
+                print(f"{'='*50}\n")
+                return {"success": False, "message": f"Unexpected response: {statuses}"}
+
         else:
-            return {"success": False, "message": f"Buy failed: {result}"}
+            error_msg = f"Buy failed - status: {result.get('status') if result else 'None'}"
+            if result:
+                error_msg += f" | response: {result}"
+            print(f"   ❌ {error_msg}")
+            print(f"{'='*50}\n")
+            return {"success": False, "message": error_msg}
 
     except Exception as e:
-        return {"success": False, "message": str(e)}
+        print(f"   ❌ EXCEPTION: {e}")
+        traceback.print_exc()
+        print(f"{'='*50}\n")
+        return {"success": False, "message": f"Exception: {str(e)}"}
 
 @app.post("/api/close-position/{symbol}")
 async def close_position(symbol: str):
-    """Close a position for a given symbol"""
+    """Close a position for a given symbol - IMMEDIATE, FAST, RELIABLE"""
+    import time
+    start_time = time.time()
+
+    print(f"⚡ CLOSE REQUEST: {symbol}")
+
     try:
         if not HYPERLIQUID_AVAILABLE:
             return {"success": False, "message": "HyperLiquid SDK not available"}
@@ -975,37 +1312,100 @@ async def close_position(symbol: str):
         if not account:
             return {"success": False, "message": "No account configured"}
 
-        # Import HyperLiquid exchange
         from hyperliquid.exchange import Exchange
 
-        # Get current position
         info = Info(constants.MAINNET_API_URL, skip_ws=True)
-        user_state = info.user_state(account.address)
+        exchange = Exchange(account, constants.MAINNET_API_URL)
 
+        # Step 1: Get position size (needed for response)
+        t1 = time.time()
+        user_state = info.user_state(account.address)
         position_size = 0
+        entry_price = 0
         for pos in user_state.get("assetPositions", []):
             position = pos.get("position", {})
             if position.get("coin") == symbol:
                 position_size = float(position.get("szi", 0))
+                entry_price = float(position.get("entryPx", 0))
                 break
+        print(f"   Position check: {time.time()-t1:.3f}s")
 
         if position_size == 0:
             return {"success": False, "message": f"No open position for {symbol}"}
 
-        # Close the position
-        exchange = Exchange(account, constants.MAINNET_API_URL)
-
-        # Market close - if long, sell; if short, buy
-        is_long = position_size > 0
         close_size = abs(position_size)
+        is_long = position_size > 0
 
+        # Step 2: Cancel orders for this symbol (TP/SL can interfere)
+        t2 = time.time()
+        try:
+            open_orders = info.open_orders(account.address)
+            symbol_orders = [o for o in open_orders if o['coin'] == symbol]
+            if symbol_orders:
+                for order in symbol_orders:
+                    try:
+                        exchange.cancel(symbol, order['oid'])
+                    except:
+                        pass
+                print(f"   Cancelled {len(symbol_orders)} orders: {time.time()-t2:.3f}s")
+        except:
+            pass
+
+        # Step 3: MARKET CLOSE - this is the critical part
+        t3 = time.time()
         result = exchange.market_close(symbol)
+        close_time = time.time() - t3
+        print(f"   Market close: {close_time:.3f}s")
 
-        # Clear fill history for this symbol
+        # Check result
+        if result.get('status') == 'ok':
+            statuses = result.get('response', {}).get('data', {}).get('statuses', [])
+            if statuses and 'filled' in statuses[0]:
+                filled = statuses[0]['filled']
+                avg_px = float(filled.get('avgPx', 0))
+                total_sz = filled.get('totalSz', close_size)
+
+                # Calculate P/L
+                if entry_price > 0 and avg_px > 0:
+                    if is_long:
+                        pnl = (avg_px - entry_price) * float(total_sz)
+                    else:
+                        pnl = (entry_price - avg_px) * float(total_sz)
+                    pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+                else:
+                    pnl_str = ""
+
+                total_time = time.time() - start_time
+                clear_fills_for_symbol(symbol)
+
+                msg = f"Closed {symbol} @ ${avg_px:.4f} ({pnl_str}) in {total_time:.2f}s"
+                print(f"   ✅ {msg}")
+                return {"success": True, "message": msg}
+
+            # No fill in response - check for errors
+            if statuses and 'error' in statuses[0]:
+                error = statuses[0]['error']
+                print(f"   ❌ Error: {error}")
+                return {"success": False, "message": f"Close failed: {error}"}
+
+        # Unexpected response - verify position
+        print(f"   ⚠️ Unexpected response, verifying...")
+        time.sleep(0.3)
+        user_state = info.user_state(account.address)
+        for pos in user_state.get("assetPositions", []):
+            position = pos.get("position", {})
+            if position.get("coin") == symbol:
+                remaining = float(position.get("szi", 0))
+                if remaining == 0:
+                    clear_fills_for_symbol(symbol)
+                    return {"success": True, "message": f"Closed {symbol}"}
+
+        # Position not found = closed
         clear_fills_for_symbol(symbol)
+        return {"success": True, "message": f"Closed {symbol}"}
 
-        return {"success": True, "message": f"Closed {symbol} position ({close_size:.6f})"}
     except Exception as e:
+        print(f"   ❌ Exception: {str(e)}")
         return {"success": False, "message": str(e)}
 
 @app.post("/api/reverse-position/{symbol}")
@@ -1261,11 +1661,188 @@ async def cancel_duplicate_orders():
     except Exception as e:
         return {"success": False, "message": str(e)}
 
+@app.post("/api/cancel-all-orders")
+async def cancel_all_orders():
+    """Cancel ALL open orders (TP/SL)"""
+    try:
+        if not HYPERLIQUID_AVAILABLE:
+            return {"success": False, "message": "HyperLiquid SDK not available"}
+
+        account = get_hyperliquid_account()
+        if not account:
+            return {"success": False, "message": "No account configured"}
+
+        from hyperliquid.exchange import Exchange
+
+        info = Info(constants.MAINNET_API_URL, skip_ws=True)
+        exchange = Exchange(account, constants.MAINNET_API_URL)
+
+        # Get all open orders
+        open_orders = info.open_orders(account.address)
+
+        if not open_orders:
+            return {"success": True, "message": "No open orders to cancel"}
+
+        # Cancel all orders
+        cancelled = 0
+        for order in open_orders:
+            try:
+                exchange.cancel(order['coin'], order['oid'])
+                cancelled += 1
+            except Exception:
+                pass
+
+        return {"success": True, "message": f"Cancelled {cancelled} orders"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+# ============================================================================
+# LOG STREAMING API - For External Log Analyzer
+# ============================================================================
+
+LOG_FILES_CONFIG = {
+    "dashboard": "/tmp/dashboard.log",
+    "trading_bot": "/tmp/bot_output.log",
+}
+
+@app.get("/api/logs/stream")
+async def stream_logs(source: str = "all", lines: int = 100, since_bytes: int = 0):
+    """Stream logs for external log analyzer
+
+    Args:
+        source: 'dashboard', 'trading_bot', or 'all'
+        lines: Number of recent lines to return
+        since_bytes: Return only content after this byte position (for incremental reads)
+    """
+    try:
+        result = {"logs": {}, "positions": {}}
+
+        sources = LOG_FILES_CONFIG.keys() if source == "all" else [source]
+
+        for src in sources:
+            filepath = LOG_FILES_CONFIG.get(src)
+            if not filepath or not os.path.exists(filepath):
+                continue
+
+            with open(filepath, 'r') as f:
+                f.seek(0, 2)
+                file_size = f.tell()
+
+                if since_bytes > 0 and since_bytes < file_size:
+                    # Incremental read
+                    f.seek(since_bytes)
+                    content = f.read()
+                else:
+                    # Read last N lines
+                    f.seek(0)
+                    all_lines = f.readlines()
+                    content = ''.join(all_lines[-lines:])
+
+                result["logs"][src] = content
+                result["positions"][src] = file_size
+
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/logs/state")
+async def get_system_state():
+    """Get current system state for verification (positions, orders, account)"""
+    try:
+        if not HYPERLIQUID_AVAILABLE:
+            return {"error": "HyperLiquid not available"}
+
+        account = get_hyperliquid_account()
+        if not account:
+            return {"error": "No account configured"}
+
+        info = Info(constants.MAINNET_API_URL, skip_ws=True)
+        user_state = info.user_state(account.address)
+        open_orders = info.open_orders(account.address)
+
+        positions = []
+        for pos in user_state.get('assetPositions', []):
+            p = pos.get('position', {})
+            size = float(p.get('szi', 0))
+            if size != 0:
+                positions.append({
+                    'symbol': p.get('coin'),
+                    'size': size,
+                    'entry': float(p.get('entryPx', 0)),
+                    'pnl': float(p.get('unrealizedPnl', 0)),
+                    'pnl_pct': float(p.get('returnOnEquity', 0)) * 100,
+                    'leverage': p.get('leverage', {}).get('value', 1),
+                    'liquidation': p.get('liquidationPx'),
+                })
+
+        orders = [{
+            'symbol': o.get('coin'),
+            'side': o.get('side'),
+            'size': o.get('sz'),
+            'price': o.get('limitPx'),
+            'type': o.get('orderType', 'limit'),
+            'oid': o.get('oid'),
+        } for o in open_orders]
+
+        return {
+            'account_value': float(user_state.get('marginSummary', {}).get('accountValue', 0)),
+            'margin_used': float(user_state.get('marginSummary', {}).get('totalMarginUsed', 0)),
+            'withdrawable': float(user_state.get('withdrawable', 0)),
+            'positions': positions,
+            'open_orders': orders,
+            'timestamp': datetime.now().isoformat(),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/logs/health")
+async def health_check():
+    """Health check endpoint for Log Analyzer"""
+    return {
+        "status": "ok",
+        "service": "trading_bot_dashboard",
+        "timestamp": datetime.now().isoformat(),
+        "hyperliquid_available": HYPERLIQUID_AVAILABLE,
+    }
+
+
+def start_log_scanner():
+    """Auto-start the log scanner agent if not already running"""
+    import subprocess
+    try:
+        # Check if already running
+        result = subprocess.run(['pgrep', '-f', 'log_scanner_agent'], capture_output=True)
+        if result.returncode == 0:
+            print("✅ Log Scanner already running")
+            return
+
+        # Start log scanner in background
+        scanner_path = PROJECT_ROOT / "src" / "agents" / "log_scanner_agent.py"
+        if scanner_path.exists():
+            subprocess.Popen(
+                [sys.executable, str(scanner_path)],
+                stdout=open('/tmp/log_scanner.log', 'w'),
+                stderr=subprocess.STDOUT,
+                start_new_session=True
+            )
+            print("✅ Log Scanner auto-started")
+        else:
+            print(f"⚠️ Log Scanner not found at {scanner_path}")
+    except Exception as e:
+        print(f"⚠️ Could not start Log Scanner: {e}")
+
+
 if __name__ == "__main__":
     print("\n" + "="*60)
     print("CryptoVerge Bot Dashboard")
     print("="*60)
     print("\nStarting dashboard at: http://localhost:8081")
+
+    # Auto-start log scanner
+    start_log_scanner()
+
     print("Press Ctrl+C to stop\n")
 
     uvicorn.run(app, host="0.0.0.0", port=8081, log_level="warning")

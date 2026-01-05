@@ -59,6 +59,7 @@
                 if (data.account) {
                     document.getElementById('equity').textContent = '$' + (data.account.equity || 0).toFixed(2);
                     document.getElementById('balance').textContent = '$' + (data.account.balance || 0).toFixed(2);
+                    document.getElementById('available').textContent = '$' + (data.account.available_margin || 0).toFixed(2);
 
                     const pnl = data.account.unrealized_pnl || 0;
                     const pnlEl = document.getElementById('unrealized-pnl');
@@ -131,7 +132,7 @@
                                     <div class="position-stats">
                                         <div class="position-stat">
                                             <span class="position-stat-label">Total Qty (Avg)</span>
-                                            <span class="position-stat-value">${Math.abs(pos.size).toFixed(5)} @ $${pos.entry_price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: pos.entry_price < 10 ? 4 : 2})}</span>
+                                            <span class="position-stat-value">${Math.abs(pos.size).toFixed(5)} @ $${pos.entry_price < 0.01 ? pos.entry_price.toFixed(6) : pos.entry_price < 1 ? pos.entry_price.toFixed(5) : pos.entry_price < 10 ? pos.entry_price.toFixed(4) : pos.entry_price.toFixed(2)}</span>
                                         </div>
                                         <div class="position-stat">
                                             <span class="position-stat-label">Value</span>
@@ -139,11 +140,11 @@
                                         </div>
                                         <div class="position-stat">
                                             <span class="position-stat-label" style="color:var(--profit);">TP ${tpPct ? '(+' + tpPct + '%)' : '(Not Set)'}</span>
-                                            <span class="position-stat-value" style="color:var(--profit);">${tpPrice ? '$' + tpPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: tpPrice < 10 ? 4 : 2}) : '--'}</span>
+                                            <span class="position-stat-value" style="color:var(--profit);">${tpPrice ? '$' + (tpPrice < 0.01 ? tpPrice.toFixed(6) : tpPrice < 1 ? tpPrice.toFixed(5) : tpPrice < 10 ? tpPrice.toFixed(4) : tpPrice.toFixed(2)) : '--'}</span>
                                         </div>
                                         <div class="position-stat">
                                             <span class="position-stat-label" style="color:var(--loss);">SL ${slPct ? '(-' + slPct + '%)' : '(Not Set)'}</span>
-                                            <span class="position-stat-value" style="color:var(--loss);">${slPrice ? '$' + slPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: slPrice < 10 ? 4 : 2}) : '--'}</span>
+                                            <span class="position-stat-value" style="color:var(--loss);">${slPrice ? '$' + (slPrice < 0.01 ? slPrice.toFixed(6) : slPrice < 1 ? slPrice.toFixed(5) : slPrice < 10 ? slPrice.toFixed(4) : slPrice.toFixed(2)) : '--'}</span>
                                         </div>
                                     </div>
                                     ${symbolFills.length > 0 ? '<div style="margin-top:8px;border-top:1px solid #1a1a2e;padding-top:8px;"><span style="font-size:10px;color:#666;">Individual Buys:</span>' + fillsHtml + '</div>' : ''}
@@ -182,12 +183,17 @@
                         const report = analysisReports[symbol] || {};
                         const action = enabled ? (report.action || 'PENDING').toLowerCase() : 'disabled';
                         const confidence = report.confidence || '-';
+                        const hasTpsl = report.tpsl_recommendations && Object.keys(report.tpsl_recommendations).length > 0;
+                        const tpslIcon = hasTpsl
+                            ? '<span title="TP/SL recommendations available" style="color:#00ff88;font-size:10px;margin-left:4px;">🎯</span>'
+                            : '<span title="No TP/SL recommendations" style="color:#ff6b6b;font-size:10px;margin-left:4px;">⚠</span>';
                         return `
                             <div class="token-item ${enabled ? '' : 'disabled'}">
                                 <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleSymbol('${symbol}', this.checked)" onclick="event.stopPropagation()">
                                 <div class="token-info" onclick="showAnalysis('${symbol}')" style="cursor:pointer;">
                                     <div class="token-icon">${symbol.substring(0, 3)}</div>
                                     <span class="token-name">${symbol}</span>
+                                    ${enabled ? tpslIcon : ''}
                                 </div>
                                 <div class="token-meta" onclick="showAnalysis('${symbol}')" style="cursor:pointer;">
                                     <span class="token-confidence">${enabled ? confidence + '%' : 'OFF'}</span>
@@ -244,6 +250,10 @@
                     await fetch('/api/setting/' + s + '/' + value, { method: 'POST' });
                 }
                 await fetch('/api/confidence/' + confidence, { method: 'POST' });
+
+                // Save auto TP/SL settings
+                await saveAutoTpsl();
+
                 showStatus('Settings saved! Min confidence: ' + confidence + '%', 'success');
                 await fetch('/api/restart', { method: 'POST' });
                 setTimeout(() => { isSaving = false; fetchData(); }, 2000);
@@ -398,15 +408,43 @@
         }
 
         async function closePosition(symbol) {
-            if (!confirm('Close ' + symbol + ' position?')) return;
-            showStatus('Closing ' + symbol + '...', '');
+            if (!confirm('Close ' + symbol + ' position immediately?')) return;
+
+            // Disable all close buttons to prevent multiple clicks
+            const closeButtons = document.querySelectorAll('.btn-close-position');
+            closeButtons.forEach(btn => {
+                btn.disabled = true;
+                if (btn.onclick && btn.onclick.toString().includes(symbol)) {
+                    btn.textContent = 'CLOSING...';
+                    btn.style.background = '#ff9800';
+                }
+            });
+
+            showStatus('⚡ CLOSING ' + symbol + ' NOW...', 'warning');
+
             try {
                 const response = await fetch('/api/close-position/' + symbol, { method: 'POST' });
                 const data = await response.json();
-                showStatus(data.message, data.success ? 'success' : 'error');
-                setTimeout(fetchData, 2000);
+
+                if (data.success) {
+                    showStatus('✅ ' + data.message, 'success');
+                    // Immediate refresh
+                    fetchData();
+                } else {
+                    showStatus('❌ ' + data.message, 'error');
+                }
             } catch (error) {
-                showStatus('Error: ' + error.message, 'error');
+                showStatus('❌ Error: ' + error.message, 'error');
+            } finally {
+                // Re-enable buttons after short delay
+                setTimeout(() => {
+                    closeButtons.forEach(btn => {
+                        btn.disabled = false;
+                        btn.textContent = 'Close';
+                        btn.style.background = '';
+                    });
+                    fetchData();
+                }, 1000);
             }
         }
 
@@ -438,6 +476,19 @@
             showStatus('Cancelling duplicate orders...', '');
             try {
                 const response = await fetch('/api/cancel-duplicate-orders', { method: 'POST' });
+                const data = await response.json();
+                showStatus(data.message, data.success ? 'success' : 'error');
+                setTimeout(fetchData, 2000);
+            } catch (error) {
+                showStatus('Error: ' + error.message, 'error');
+            }
+        }
+
+        async function cancelAllOrders() {
+            if (!confirm('Cancel ALL open orders (TP/SL)? This cannot be undone.')) return;
+            showStatus('Cancelling all orders...', '');
+            try {
+                const response = await fetch('/api/cancel-all-orders', { method: 'POST' });
                 const data = await response.json();
                 showStatus(data.message, data.success ? 'success' : 'error');
                 setTimeout(fetchData, 2000);
@@ -799,6 +850,55 @@
             }
         }
 
+        // Load auto TP/SL settings
+        async function loadAutoTpsl() {
+            try {
+                const response = await fetch('/api/auto-tpsl');
+                const data = await response.json();
+                document.getElementById('auto-tpsl-enabled').checked = data.enabled || false;
+                document.getElementById('auto-tpsl-max-sl').value = data.max_sl || 7;
+                document.getElementById('auto-tpsl-mode').value = data.mode || 'moderate';
+
+                // Load ATR settings
+                document.getElementById('atr-stops-enabled').checked = data.use_atr || false;
+                document.getElementById('atr-period').value = data.atr_period || 14;
+                document.getElementById('atr-sl-mult').value = data.atr_sl_multiplier || 2.0;
+                document.getElementById('atr-tp-mult').value = data.atr_tp_multiplier || 3.0;
+                document.getElementById('atr-min-sl').value = data.atr_min_sl || 1.0;
+            } catch (e) {
+                console.error('Error loading auto TP/SL settings:', e);
+            }
+        }
+
+        // Save auto TP/SL settings
+        async function saveAutoTpsl() {
+            try {
+                const settings = {
+                    enabled: document.getElementById('auto-tpsl-enabled').checked,
+                    max_sl: parseFloat(document.getElementById('auto-tpsl-max-sl').value) || 7,
+                    mode: document.getElementById('auto-tpsl-mode').value || 'moderate',
+                    // ATR settings
+                    use_atr: document.getElementById('atr-stops-enabled').checked,
+                    atr_period: parseInt(document.getElementById('atr-period').value) || 14,
+                    atr_sl_multiplier: parseFloat(document.getElementById('atr-sl-mult').value) || 2.0,
+                    atr_tp_multiplier: parseFloat(document.getElementById('atr-tp-mult').value) || 3.0,
+                    atr_min_sl: parseFloat(document.getElementById('atr-min-sl').value) || 1.0
+                };
+                const response = await fetch('/api/auto-tpsl', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+                const result = await response.json();
+                if (result.success) {
+                    showStatus('Auto TP/SL settings saved', 'success');
+                }
+            } catch (e) {
+                console.error('Error saving auto TP/SL settings:', e);
+                showStatus('Failed to save auto TP/SL settings', 'error');
+            }
+        }
+
         // Load trade analysis/reasoning
         async function loadTradeAnalysis() {
             try {
@@ -915,22 +1015,217 @@
             }
         }
 
+        // Log Scanner Status
+        async function loadScannerStatus() {
+            try {
+                const response = await fetch('/api/log-scanner-status');
+                const data = await response.json();
+
+                const dot = document.getElementById('scanner-dot');
+                const text = document.getElementById('scanner-text');
+                const badge = document.getElementById('scanner-badge');
+                const timeEl = document.getElementById('scanner-time');
+
+                if (data.running) {
+                    dot.className = 'status-dot running';
+                    text.textContent = 'Scanner';
+                    timeEl.textContent = data.last_scan ? `Last: ${data.last_scan}` : 'Starting...';
+                    timeEl.style.color = 'var(--text-muted)';
+                    badge.title = 'Log Scanner Active - Monitors for missing TP/SL and errors';
+                } else {
+                    dot.className = 'status-dot stopped';
+                    text.textContent = 'Scanner OFF';
+                    timeEl.textContent = 'NOT RUNNING!';
+                    timeEl.style.color = 'var(--loss)';
+                    badge.title = 'WARNING: Log Scanner NOT RUNNING - Missing TP/SL will not be detected!';
+                }
+            } catch (e) {
+                console.error('Error loading scanner status:', e);
+            }
+        }
+
+        // Daily Drawdown / Circuit Breaker
+        async function loadDailyDrawdown() {
+            try {
+                const response = await fetch('/api/daily-drawdown');
+                const data = await response.json();
+
+                const dailyPnlEl = document.getElementById('daily-pnl');
+                const dailyLimitEl = document.getElementById('daily-limit');
+                const alertEl = document.getElementById('circuit-breaker-alert');
+                const alertMsgEl = document.getElementById('circuit-breaker-msg');
+                const cbCard = document.getElementById('circuit-breaker-card');
+
+                if (data.error) {
+                    dailyPnlEl.textContent = '--';
+                    return;
+                }
+
+                // Update Daily P/L display
+                const pnl = data.daily_pnl || 0;
+                const pnlPct = data.daily_pnl_pct || 0;
+                dailyPnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2) + ' (' + (pnl >= 0 ? '+' : '') + pnlPct.toFixed(1) + '%)';
+                dailyPnlEl.style.color = pnl >= 0 ? 'var(--profit)' : 'var(--loss)';
+
+                // Update limit display
+                dailyLimitEl.textContent = '-$' + (data.limit_usd || 50);
+
+                // Calculate progress to limit for visual indicator
+                const limit = data.limit_usd || 50;
+                const progress = Math.min(100, Math.abs(pnl) / limit * 100);
+
+                // Update circuit breaker card color based on progress
+                if (data.circuit_breaker_triggered) {
+                    cbCard.style.background = '#ff000033';
+                    cbCard.style.borderColor = '#ff4444';
+                    alertEl.style.display = 'block';
+                    alertMsgEl.textContent = 'Triggered at ' + (data.triggered_at || 'unknown');
+                } else if (pnl < 0 && progress >= 70) {
+                    // Warning zone (70%+ of limit used)
+                    cbCard.style.background = '#ff880033';
+                    cbCard.style.borderColor = '#ff8800';
+                    alertEl.style.display = 'none';
+                } else {
+                    cbCard.style.background = '';
+                    cbCard.style.borderColor = '';
+                    alertEl.style.display = 'none';
+                }
+
+            } catch (e) {
+                console.error('Error loading daily drawdown:', e);
+            }
+        }
+
+        async function resetDrawdown() {
+            if (!confirm('Reset daily drawdown circuit breaker?\n\nThis will set current balance as the new starting point for today.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/daily-drawdown/reset', { method: 'POST' });
+                const data = await response.json();
+
+                if (data.success) {
+                    showStatus(data.message, 'success');
+                    loadDailyDrawdown();  // Refresh display
+                } else {
+                    showStatus('Reset failed: ' + data.message, 'error');
+                }
+            } catch (e) {
+                showStatus('Reset failed: ' + e.message, 'error');
+            }
+        }
+
+        // Discord Alerts
+        async function loadAlerts() {
+            try {
+                const response = await fetch('/api/alerts');
+                const data = await response.json();
+
+                if (data.error) return;
+
+                document.getElementById('alerts-enabled').checked = data.enabled !== false;
+                document.getElementById('discord-webhook').value = data.discord_webhook || '';
+
+                // Load alert type checkboxes
+                const alertTypes = data.alert_types || {};
+                const typeIds = ['position_opened', 'position_closed', 'stop_loss_hit', 'take_profit_hit',
+                                 'trailing_stop_hit', 'drawdown_warning', 'circuit_breaker', 'critical_error'];
+
+                typeIds.forEach(type => {
+                    const el = document.getElementById('alert-' + type);
+                    if (el) {
+                        el.checked = alertTypes[type] !== false;
+                    }
+                });
+            } catch (e) {
+                console.error('Error loading alerts:', e);
+            }
+        }
+
+        async function saveAlerts() {
+            try {
+                const alertTypes = {};
+                const typeIds = ['position_opened', 'position_closed', 'stop_loss_hit', 'take_profit_hit',
+                                 'trailing_stop_hit', 'drawdown_warning', 'circuit_breaker', 'critical_error'];
+
+                typeIds.forEach(type => {
+                    const el = document.getElementById('alert-' + type);
+                    if (el) {
+                        alertTypes[type] = el.checked;
+                    }
+                });
+
+                const settings = {
+                    enabled: document.getElementById('alerts-enabled').checked,
+                    discord_webhook: document.getElementById('discord-webhook').value.trim(),
+                    alert_types: alertTypes
+                };
+
+                const response = await fetch('/api/alerts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    showStatus('Alert settings saved!', 'success');
+                } else {
+                    showStatus('Failed to save alerts: ' + (data.error || 'Unknown error'), 'error');
+                }
+            } catch (e) {
+                showStatus('Error saving alerts: ' + e.message, 'error');
+            }
+        }
+
+        async function testAlert() {
+            const webhook = document.getElementById('discord-webhook').value.trim();
+            if (!webhook) {
+                showStatus('Please enter a Discord webhook URL first', 'error');
+                return;
+            }
+
+            // Save first to ensure webhook is stored
+            await saveAlerts();
+
+            try {
+                showStatus('Sending test alert...', 'info');
+                const response = await fetch('/api/alerts/test', { method: 'POST' });
+                const data = await response.json();
+
+                if (data.success) {
+                    showStatus('Test alert sent! Check your Discord channel.', 'success');
+                } else {
+                    showStatus('Test failed: ' + data.message, 'error');
+                }
+            } catch (e) {
+                showStatus('Error sending test: ' + e.message, 'error');
+            }
+        }
+
         // Init
         fetchData();
         loadIndicators();
         loadEquityChart();
         loadConfidence();
+        loadAutoTpsl();
         loadGoals();
+        loadAlerts();
         loadScanSettings();
         loadActiveInterval();
         loadTradeAnalysis();
         loadFearGreed();
+        loadScannerStatus();
+        loadDailyDrawdown();
         initTradingViewChart();
         setInterval(fetchData, 5000);
         setInterval(loadEquityChart, 60000);  // Refresh chart every minute
         setInterval(loadTradeAnalysis, 10000);  // Refresh trade analysis every 10s
         setInterval(loadFearGreed, 300000);  // Refresh Fear & Greed every 5 minutes
         setInterval(loadActiveInterval, 30000);  // Refresh active interval every 30s
+        setInterval(loadScannerStatus, 30000);  // Check scanner status every 30s
+        setInterval(loadDailyDrawdown, 30000);  // Check daily drawdown every 30s
 
         // Price Ticker
         async function loadPriceTicker() {

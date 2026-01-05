@@ -406,8 +406,17 @@ def get_account_value(account):
     print(f'Account value: ${account_value:,.2f}')
     return account_value
 
-def market_buy(symbol, usd_size, account):
-    """Market buy using HyperLiquid"""
+def market_buy(symbol, usd_size, account, auto_tpsl=True, tp_pct=10.0, sl_pct=3.0):
+    """Market buy using HyperLiquid with automatic TP/SL
+
+    Args:
+        symbol: Token symbol (e.g., 'BTC', 'kPEPE')
+        usd_size: USD amount to buy
+        account: HyperLiquid account
+        auto_tpsl: Automatically set TP/SL orders (default True)
+        tp_pct: Take profit percentage (default 10%)
+        sl_pct: Stop loss percentage (default 3%)
+    """
     import math
     print(colored(f'🛒 Market BUY {symbol} for ${usd_size}', 'green'))
 
@@ -446,6 +455,28 @@ def market_buy(symbol, usd_size, account):
     order_result = exchange.order(symbol, True, pos_size, buy_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
 
     print(colored(f'✅ Market buy executed: {pos_size} {symbol} at ${buy_price}', 'green'))
+
+    # Auto set TP/SL if enabled and order was filled
+    if auto_tpsl and order_result.get('status') == 'ok':
+        statuses = order_result.get('response', {}).get('data', {}).get('statuses', [])
+        if statuses and 'filled' in statuses[0]:
+            print(colored(f'🎯 Auto-setting TP/SL (TP: +{tp_pct}%, SL: -{sl_pct}%)', 'cyan'))
+            try:
+                time.sleep(0.5)  # Brief pause to ensure position is registered
+                # Get FULL position (not just this fill) for correct TP/SL sizing
+                positions, im_in_pos, total_size, pos_sym, avg_entry, pnl_pct, is_long = get_position(symbol, account)
+                if im_in_pos:
+                    # Use total position size and average entry for TP/SL
+                    place_tp_sl_orders(symbol, float(avg_entry), abs(float(total_size)), is_long, tp_pct, sl_pct, account)
+                else:
+                    # Fallback to fill data if position query fails
+                    filled = statuses[0]['filled']
+                    entry_px = float(filled.get('avgPx', buy_price))
+                    filled_sz = float(filled.get('totalSz', pos_size))
+                    place_tp_sl_orders(symbol, entry_px, filled_sz, True, tp_pct, sl_pct, account)
+            except Exception as e:
+                print(colored(f'⚠️ Failed to set TP/SL: {e}', 'yellow'))
+
     return order_result
 
 def market_sell(symbol, usd_size, account):
@@ -1002,8 +1033,8 @@ def ai_entry(symbol, amount, max_chunk_size=None, leverage=DEFAULT_LEVERAGE, acc
     result = market_buy(symbol, amount, account)
     return result is not None
 
-def open_short(token, amount, slippage=None, leverage=DEFAULT_LEVERAGE, account=None):
-    """Open SHORT position explicitly
+def open_short(token, amount, slippage=None, leverage=DEFAULT_LEVERAGE, account=None, auto_tpsl=True, tp_pct=10.0, sl_pct=3.0):
+    """Open SHORT position explicitly with automatic TP/SL
 
     Args:
         token: Token symbol
@@ -1011,6 +1042,9 @@ def open_short(token, amount, slippage=None, leverage=DEFAULT_LEVERAGE, account=
         slippage: Not used (kept for compatibility)
         leverage: Leverage multiplier
         account: HyperLiquid account object (optional, will create from env if not provided)
+        auto_tpsl: Automatically set TP/SL orders (default True)
+        tp_pct: Take profit percentage (default 10%)
+        sl_pct: Stop loss percentage (default 3%)
 
     Returns:
         dict: Order response
@@ -1053,6 +1087,28 @@ def open_short(token, amount, slippage=None, leverage=DEFAULT_LEVERAGE, account=
         order_result = exchange.order(token, False, pos_size, sell_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
 
         print(colored(f'✅ Short position opened!', 'green'))
+
+        # Auto set TP/SL if enabled and order was filled
+        if auto_tpsl and order_result and order_result.get('status') == 'ok':
+            statuses = order_result.get('response', {}).get('data', {}).get('statuses', [])
+            if statuses and 'filled' in statuses[0]:
+                print(colored(f'🎯 Auto-setting TP/SL (TP: +{tp_pct}%, SL: -{sl_pct}%)', 'cyan'))
+                try:
+                    time.sleep(0.5)  # Brief pause to ensure position is registered
+                    # Get FULL position (not just this fill) for correct TP/SL sizing
+                    positions, im_in_pos, total_size, pos_sym, avg_entry, pnl_pct, is_long = get_position(token, account)
+                    if im_in_pos:
+                        # Use total position size and average entry for TP/SL
+                        place_tp_sl_orders(token, float(avg_entry), abs(float(total_size)), is_long, tp_pct, sl_pct, account)
+                    else:
+                        # Fallback to fill data if position query fails
+                        filled = statuses[0]['filled']
+                        entry_px = float(filled.get('avgPx', sell_price))
+                        filled_sz = float(filled.get('totalSz', pos_size))
+                        place_tp_sl_orders(token, entry_px, filled_sz, False, tp_pct, sl_pct, account)
+                except Exception as e:
+                    print(colored(f'⚠️ Failed to set TP/SL: {e}', 'yellow'))
+
         return order_result
 
     except Exception as e:

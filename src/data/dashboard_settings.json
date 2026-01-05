@@ -1,0 +1,12 @@
+{
+    "min_confidence": 65,
+    "updated_at": "2026-01-05T09:14:10.204082",
+    "auto_tpsl_enabled": true,
+    "auto_tpsl_max_sl": 7,
+    "auto_tpsl_mode": "moderate",
+    "auto_tpsl_use_atr": true,
+    "atr_period": 14,
+    "atr_sl_multiplier": 2.0,
+    "atr_tp_multiplier": 3.0,
+    "atr_min_sl": 1.0
+}
