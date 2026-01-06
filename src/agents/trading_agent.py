@@ -106,7 +106,11 @@ LONG_ONLY = False  # False = Allow both Long & Short positions (HyperLiquid)
                   #
                   # Note: Solana is always LONG_ONLY (exchange limitation)
 
-# 🤖 SINGLE MODEL SETTINGS (only used when USE_SWARM_MODE = False)
+# 🤖 AI SETTINGS
+USE_AI = False  # Set to False to disable ALL AI/LLM calls (uses pure technical analysis)
+                # When False: Uses rule-based technical analysis (RSI, MACD, ADX, etc.)
+                # When True: Uses LLM for trade reasoning (costs API tokens)
+
 AI_MODEL_TYPE = 'xai'  # Options: 'groq', 'openai', 'claude', 'deepseek', 'xai', 'ollama', 'gemini'
 AI_MODEL_NAME = 'grok-4-fast-reasoning'   # xAI Grok 4 - 2M context, no rate limits
 AI_TEMPERATURE = 0.7   # Creativity vs precision (0-1)
@@ -142,6 +146,21 @@ USE_TRAILING_STOP = True         # Enable trailing stop loss
 TRAILING_STOP_ACTIVATION = 3.0   # Activate trailing stop after this % profit
 TRAILING_STOP_DISTANCE = 2.0     # Trail this % behind highest price
 
+# 💰 PARTIAL PROFIT TAKING (Scale Out)
+USE_PARTIAL_PROFITS = True       # Enable partial profit taking
+PARTIAL_PROFIT_1_PCT = 5.0       # First partial take profit at this % gain
+PARTIAL_PROFIT_1_SIZE = 50       # Close this % of position at first target (e.g., 50 = close 50%)
+PARTIAL_PROFIT_2_PCT = 8.0       # Second partial take profit at this % gain (0 = disabled)
+PARTIAL_PROFIT_2_SIZE = 25       # Close this % of REMAINING position at second target
+MOVE_SL_TO_BREAKEVEN = True      # After first partial, move SL to entry price (breakeven)
+MOVE_SL_TO_PROFIT = True         # After second partial, move SL to first partial level
+                                 # Example with $100 position, 5%/50% first partial:
+                                 # - At +5%: Close $50 (50%), lock in ~$2.50 profit
+                                 # - Move SL to breakeven (0% loss on remaining $50)
+                                 # - At +8%: Close $12.50 (25% of $50), lock in ~$1.00 more
+                                 # - Move SL to +5% (guaranteed profit on remaining $37.50)
+                                 # - Let remaining run to full TP or trailing stop
+
 # 📊 ATR-BASED DYNAMIC STOPS (volatility-adjusted)
 USE_ATR_STOPS = True             # True = Use ATR-based stops, False = use fixed percentage
 ATR_PERIOD = 14                  # ATR calculation period (14 is standard)
@@ -152,7 +171,7 @@ ATR_SL_MULTIPLIER = 2.0          # Stop Loss = Entry ± (ATR × multiplier)
 ATR_TP_MULTIPLIER = 3.0          # Take Profit = Entry ± (ATR × multiplier)
                                  # Usually 1.5x-2x the SL multiplier for good risk:reward
 ATR_MIN_SL_PCT = 1.0             # Minimum SL percentage (floor) - prevents too tight stops
-ATR_MAX_SL_PCT = 7.0             # Maximum SL percentage (ceiling) - prevents too wide stops
+ATR_MAX_SL_PCT = 10.0            # Maximum SL percentage (ceiling) - prevents too wide stops
 ATR_TRAILING_MULTIPLIER = 1.5    # Trailing stop distance = ATR × multiplier
 
 # 🛑 DAILY DRAWDOWN CIRCUIT BREAKER
@@ -180,6 +199,27 @@ DYNAMIC_SIZE_MIN_PCT = 10        # Minimum position % at MIN_CONFIDENCE_TO_TRADE
 DYNAMIC_SIZE_MAX_PCT = 30        # Maximum position % at 100% confidence
                                  # Example: 70% conf = 10%, 85% conf = 20%, 100% conf = 30%
 
+# 🔗 CORRELATION-AWARE POSITION SIZING
+USE_CORRELATION_SIZING = True    # True = Reduce size when holding correlated assets
+                                 # False = Ignore correlations
+CORRELATION_REDUCTION_PCT = 50   # Reduce position by this % when correlated asset is held
+                                 # Example: 50 = cut position in half if holding correlated asset
+MAX_CORRELATED_EXPOSURE_PCT = 60 # Max combined exposure to correlated group (% of account)
+                                 # Example: 60 = BTC + ETH combined can't exceed 60% of account
+
+# Correlation groups - assets that tend to move together
+# When holding one asset in a group, new positions in same group are reduced
+CORRELATION_GROUPS = {
+    "btc_ecosystem": ["BTC", "WBTC", "RUNE", "STX"],      # Bitcoin & BTC-related
+    "eth_ecosystem": ["ETH", "WETH", "stETH", "ARB", "OP", "MATIC", "BASE"],  # Ethereum L2s
+    "meme_coins": ["DOGE", "SHIB", "PEPE", "kPEPE", "FLOKI", "BONK", "WIF"],  # Meme coins move together
+    "ai_tokens": ["FET", "AGIX", "OCEAN", "RNDR", "TAO"],  # AI narrative tokens
+    "sol_ecosystem": ["SOL", "JTO", "PYTH", "JUP", "RAY"], # Solana ecosystem
+    "defi_blue_chips": ["UNI", "AAVE", "MKR", "LINK", "SNX"], # DeFi majors
+    "alt_l1s": ["AVAX", "NEAR", "SUI", "APT", "SEI", "INJ"], # Alt L1 chains
+    "xrp_ecosystem": ["XRP", "XLM", "HBAR"],              # Payment/enterprise chains
+}
+
 # Legacy settings (kept for compatibility, not used in new logic)
 usd_size = 25                    # [DEPRECATED] Use MAX_POSITION_PERCENTAGE instead
 max_usd_order_size = 3           # Maximum order chunk size in USD (for Solana chunking)
@@ -190,28 +230,43 @@ DATA_TIMEFRAME = '4H'            # Primary bar timeframe for main analysis (4H =
 SAVE_OHLCV_DATA = False          # True = save data permanently, False = temp data only
 
 # Multi-Timeframe Analysis
-USE_MULTI_TIMEFRAME = False      # Set True to analyze multiple timeframes
-MTF_TIMEFRAMES = ['1H', '4H']    # 1H = Entry timing, 4H = Main trend analysis
+USE_MULTI_TIMEFRAME = True       # Analyze 5m/15m/1H/4H for trend alignment
+MTF_TIMEFRAMES = ['5m', '15m', '1h', '4h']  # All timeframes for alignment check
                                  # HyperLiquid supports: 1m, 5m, 15m, 1h, 4h, 1d
 
 # 📊 INDICATOR TOGGLES - Enable/Disable indicators for AI analysis
+# Optimized indicator set with high-value signals for accurate analysis
 INDICATORS = {
-    # Core Indicators
-    "rsi": True,              # RSI (14) - Overbought/Oversold
+    # ✅ TIER 1: Essential Indicators (Always On)
+    "rsi": True,              # RSI (14) - THE overbought/oversold indicator
     "sma_20": True,           # SMA 20 - Short-term trend
     "sma_50": True,           # SMA 50 - Medium-term trend
-    "sma_200": True,          # SMA 200 - Long-term trend
-    "macd": True,             # MACD - Momentum
-    "bollinger": True,        # Bollinger Bands - Volatility
-    "volume": True,           # Volume
-    # Additional Indicators
-    "atr": True,              # ATR - Volatility/Stop placement
-    "stochastic": True,       # Stochastic - Overbought/Oversold
-    "adx": True,              # ADX - Trend strength
-    "cci": True,              # CCI - Trend/Reversals
-    "williams_r": True,       # Williams %R - Momentum
-    "obv": True,              # OBV - Volume confirmation (calculated but not shown)
-    "fibonacci": True,        # Fibonacci Retracement - Support/Resistance
+    "sma_200": True,          # SMA 200 - Long-term trend (golden/death cross)
+    "macd": True,             # MACD - Momentum + crossovers
+    "atr": True,              # ATR - Volatility for stops/position sizing
+    "adx": True,              # ADX - Trend strength (>25 = strong trend)
+    "volume": True,           # Volume bars
+    "obv": True,              # OBV - Volume trend confirmation
+    "volume_ratio": True,     # Volume vs 20-period avg (>1.5 = spike)
+
+    # ✅ HIGH-VALUE SIGNALS (New - High accuracy)
+    "rsi_divergence": True,   # RSI Divergence - Powerful reversal signal
+    "obv_divergence": True,   # OBV Divergence - Smart money detection
+    "swing_sr": True,         # Swing High/Low S/R - Actual support/resistance
+    "market_regime": True,    # Market Regime - Trending/Ranging/Breakout
+    "mtf_analysis": True,     # Multi-Timeframe Analysis (5m/15m/1H/4H alignment)
+
+    # ✅ TIER 2: Useful Indicators (Enable Selectively)
+    "bollinger": True,        # Bollinger Bands - Squeeze detection
+    "vwap": True,             # VWAP - Institutional reference level
+    "funding_rate": True,     # HyperLiquid funding rate integration
+    "fibonacci": False,       # DISABLED - Low edge, swing S/R is better
+
+    # ❌ TIER 3: Disabled (Redundant/Low Value)
+    "stochastic": False,      # DISABLED - Redundant with RSI
+    "cci": False,             # DISABLED - Noisy, low value signals
+    "williams_r": False,      # DISABLED - Redundant with RSI
+
     # Pattern Analysis
     "golden_cross": True,     # Golden Cross / Death Cross (MA20 vs MA200)
 }
@@ -264,9 +319,10 @@ MONITORED_TOKENS = [
 SYMBOLS_CONFIG = {
     # Active coins only
     'BTC': True,       # Bitcoin
-    'DOGE': True,      # Dogecoin
     'XRP': True,       # Ripple
+    'DOGE': True,      # Dogecoin
     'kPEPE': True,     # Pepe (1000 PEPE on HyperLiquid)
+    'SOL': True,       # Solana
 }
 
 # Active symbols list (auto-generated from SYMBOLS_CONFIG)
@@ -596,6 +652,168 @@ def get_drawdown_status():
         'current_balance': result['current_balance'],
         'message': result['message']
     }
+
+# ============================================================================
+# 💰 PARTIAL PROFIT STATE TRACKING
+# ============================================================================
+
+PARTIAL_PROFIT_STATE_FILE = Path(__file__).parent.parent / "data" / "partial_profit_state.json"
+
+def load_partial_profit_state():
+    """Load partial profit state from file"""
+    try:
+        if PARTIAL_PROFIT_STATE_FILE.exists():
+            with open(PARTIAL_PROFIT_STATE_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"⚠️ Could not load partial profit state: {e}")
+    return {}
+
+def save_partial_profit_state(state):
+    """Save partial profit state to file"""
+    try:
+        with open(PARTIAL_PROFIT_STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Could not save partial profit state: {e}")
+
+def get_position_partial_state(symbol):
+    """
+    Get partial profit state for a specific position.
+
+    Returns:
+        dict: {
+            'partial_1_taken': bool,
+            'partial_2_taken': bool,
+            'original_size': float,
+            'current_sl_pct': float,
+            'entry_price': float,
+            'updated_at': str
+        }
+    """
+    state = load_partial_profit_state()
+    return state.get(symbol, {
+        'partial_1_taken': False,
+        'partial_2_taken': False,
+        'original_size': 0,
+        'current_sl_pct': -STOP_LOSS_PERCENTAGE,
+        'entry_price': 0,
+        'updated_at': None
+    })
+
+def update_position_partial_state(symbol, partial_1_taken=None, partial_2_taken=None,
+                                   original_size=None, current_sl_pct=None, entry_price=None):
+    """Update partial profit state for a position"""
+    from datetime import datetime
+
+    state = load_partial_profit_state()
+    if symbol not in state:
+        state[symbol] = {
+            'partial_1_taken': False,
+            'partial_2_taken': False,
+            'original_size': 0,
+            'current_sl_pct': -STOP_LOSS_PERCENTAGE,
+            'entry_price': 0,
+            'updated_at': None
+        }
+
+    if partial_1_taken is not None:
+        state[symbol]['partial_1_taken'] = partial_1_taken
+    if partial_2_taken is not None:
+        state[symbol]['partial_2_taken'] = partial_2_taken
+    if original_size is not None:
+        state[symbol]['original_size'] = original_size
+    if current_sl_pct is not None:
+        state[symbol]['current_sl_pct'] = current_sl_pct
+    if entry_price is not None:
+        state[symbol]['entry_price'] = entry_price
+
+    state[symbol]['updated_at'] = datetime.now().isoformat()
+    save_partial_profit_state(state)
+    return state[symbol]
+
+def clear_position_partial_state(symbol):
+    """Clear partial profit state when position is fully closed"""
+    state = load_partial_profit_state()
+    if symbol in state:
+        del state[symbol]
+        save_partial_profit_state(state)
+        cprint(f"   🧹 Cleared partial profit state for {symbol}", "white")
+
+def reduce_position_size(symbol, reduce_pct, is_long, account):
+    """
+    Reduce position size by a percentage.
+
+    Args:
+        symbol: Trading symbol
+        reduce_pct: Percentage of current position to close (e.g., 50 = close 50%)
+        is_long: True if long position, False if short
+        account: HyperLiquid account
+
+    Returns:
+        tuple: (success: bool, closed_size: float, remaining_size: float)
+    """
+    try:
+        from hyperliquid.exchange import Exchange
+        from hyperliquid.utils import constants
+
+        # Get current position
+        positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, position_is_long = n.get_position(symbol, account)
+
+        if not im_in_pos:
+            cprint(f"   ⚠️ No position found for {symbol}", "yellow")
+            return False, 0, 0
+
+        current_size = abs(float(pos_size))
+        reduce_size = current_size * (reduce_pct / 100)
+
+        # Get price info
+        ask, bid, _ = n.ask_bid(symbol)
+
+        # Get decimals for rounding
+        sz_decimals, _ = n.get_sz_px_decimals(symbol)
+        reduce_size = round(reduce_size, sz_decimals)
+
+        # Ensure minimum order value ($10)
+        mid_price = (ask + bid) / 2
+        order_value = reduce_size * mid_price
+        if order_value < 10:
+            cprint(f"   ⚠️ Partial close value ${order_value:.2f} below $10 minimum, skipping", "yellow")
+            return False, 0, current_size
+
+        cprint(f"   📉 Reducing position by {reduce_pct}%: {reduce_size} {symbol} (${order_value:.2f})", "cyan")
+
+        # Place reduce-only order
+        exchange = Exchange(account, constants.MAINNET_API_URL)
+
+        if is_long:
+            # Sell to reduce long position
+            sell_price = bid * 0.999  # Slightly below bid for fill
+            if symbol == 'BTC':
+                sell_price = round(sell_price)
+            else:
+                sell_price = round(sell_price, 1)
+            order_result = exchange.order(symbol, False, reduce_size, sell_price,
+                                         {"limit": {"tif": "Ioc"}}, reduce_only=True)
+        else:
+            # Buy to reduce short position
+            buy_price = ask * 1.001  # Slightly above ask for fill
+            if symbol == 'BTC':
+                buy_price = round(buy_price)
+            else:
+                buy_price = round(buy_price, 1)
+            order_result = exchange.order(symbol, True, reduce_size, buy_price,
+                                         {"limit": {"tif": "Ioc"}}, reduce_only=True)
+
+        remaining_size = current_size - reduce_size
+        cprint(f"   ✅ Partial close executed: {reduce_size} {symbol}", "green")
+        cprint(f"   📊 Remaining position: {remaining_size} {symbol}", "white")
+
+        return True, reduce_size, remaining_size
+
+    except Exception as e:
+        cprint(f"   ❌ Error reducing position: {e}", "red")
+        return False, 0, 0
 
 # ============================================================================
 # 📊 ATR-BASED DYNAMIC STOPS
@@ -1064,47 +1282,81 @@ def play_trade_sound(sound_type="open", pnl=None):
 TRADING_PROMPT = """
 You are Moon Dev's AI Trading Assistant 🌙
 
-Analyze the provided market data and strategy signals (if available) to make a trading decision.
+Analyze the STRUCTURED INDICATOR SUMMARY to make a trading decision.
 
-Market Data Criteria:
-1. Price action relative to MA20 and MA40
-2. RSI levels and trend
-3. Volume patterns
-4. Recent price movements
+=== DECISION FRAMEWORK ===
+
+🚨 0. HIGH-VALUE SIGNALS (Check First - Most Reliable!):
+
+   RSI DIVERGENCE:
+   - BULLISH divergence = Strong BUY (+15% confidence)
+   - BEARISH divergence = Strong SELL (+15% confidence)
+   - NONE = Neutral, rely on other indicators
+
+   OBV DIVERGENCE (Smart Money):
+   - BULLISH = Big players accumulating (+10% confidence for BUY)
+   - BEARISH = Big players distributing (+10% confidence for SELL)
+
+   MARKET REGIME:
+   - TRENDING_UP = BUY setups preferred
+   - TRENDING_DOWN = SELL setups preferred
+   - RANGING = AVOID trading (wait for breakout)
+   - BREAKOUT = Trade in breakout direction
+
+   SWING S/R LEVELS:
+   - Price near SUPPORT = Better BUY entry (lower risk)
+   - Price near RESISTANCE = Better SELL entry or avoid BUY
+   - Distance <1% to level = Very close, expect reaction
+
+1. TREND ALIGNMENT:
+   - All timeframes BULLISH → Strong BUY bias
+   - All timeframes BEARISH → Strong SELL bias
+   - Mixed signals → NOTHING or reduced confidence
+
+2. MOMENTUM CONFIRMATION:
+   - RSI: OVERSOLD (<30) + bullish trend = BUY
+   - RSI: OVERBOUGHT (>70) + bearish trend = SELL
+   - MACD alignment with trend = confirmation
+
+3. VOLUME VALIDATION:
+   - Volume Ratio >1.5 = Strong conviction (increase confidence)
+   - Volume Ratio <0.5 = Weak move (decrease confidence)
+   - OBV trend should align with price trend
+
+4. VOLATILITY CONSIDERATION:
+   - HIGH volatility (ATR >3%) → Wider stops, smaller position
+   - LOW volatility (ATR <1.5%) → Tighter stops, larger position
+   - BB Squeeze (low width) → Expect breakout soon
+
+5. INSTITUTIONAL CONTEXT:
+   - Price ABOVE VWAP = institutional buying
+   - Price BELOW VWAP = institutional selling
+   - Funding Rate positive = favor shorts (longs paying)
+   - Funding Rate negative = favor longs (shorts paying)
 
 {strategy_context}
 
-Respond in this exact format:
-1. First line must be one of: BUY, SELL, or NOTHING (in caps)
-2. Then explain your reasoning, including:
-   - Technical analysis
-   - Strategy signals analysis (if available)
-   - Risk factors
-   - Market conditions
-   - Confidence level (as a percentage, e.g. 75%)
+=== RESPONSE FORMAT ===
 
-3. REQUIRED: Provide TP/SL recommendations based on technical levels:
-   TP_SL_RECOMMENDATIONS:
+1. First line: BUY, SELL, or NOTHING (in caps)
+2. Confidence: X% (based on how many factors align)
+3. Key reasons (bullet points) - MUST mention divergence/regime if present
+4. Risk factors - MUST note S/R levels if nearby
+
+5. TP/SL RECOMMENDATIONS (REQUIRED):
    CONSERVATIVE: TP=$X.XX (+X%), SL=$X.XX (-X%)
    MODERATE: TP=$X.XX (+X%), SL=$X.XX (-X%)
    AGGRESSIVE: TP=$X.XX (+X%), SL=$X.XX (-X%)
 
-   Base these on:
-   - Support levels (SMA20, SMA50, SMA200, Fibonacci retracements)
-   - Resistance levels (recent highs, Bollinger upper band)
-   - ATR for volatility-adjusted stops (recommended: SL = 2×ATR, TP = 3×ATR)
-   - Recent swing highs/lows
+   Base on: Swing S/R levels, ATR (SL=2×ATR, TP=3×ATR), VWAP
 
-4. ATR-BASED STOP GUIDANCE:
-   - If ATR is HIGH (>3% of price): Use WIDER stops to avoid noise
-   - If ATR is LOW (<1.5% of price): Use TIGHTER stops for protection
-   - Minimum SL: 1% | Maximum SL: 7% (regardless of ATR)
-   - Risk:Reward should be at least 1:1.5
+=== CONFIDENCE GUIDE ===
+- 90%+: Divergence + regime aligned + trend + volume
+- 75-89%: Most indicators aligned, clear trend
+- 60-74%: Some conflicting signals but overall bias clear
+- <60%: Too many conflicts → NOTHING
 
-Remember:
-- Moon Dev always prioritizes risk management! 🛡️
-- Never trade USDC or SOL directly
-- Consider both technical and strategy signals
+Remember: Risk management first! 🛡️
 """
 
 ALLOCATION_PROMPT = """
@@ -1133,28 +1385,50 @@ Remember:
 - Cash must be stored as USDC using USDC_ADDRESS: {USDC_ADDRESS}
 """
 
-SWARM_TRADING_PROMPT = """You are an expert cryptocurrency trading AI analyzing market data.
+SWARM_TRADING_PROMPT = """You are an expert cryptocurrency trading AI. Analyze the STRUCTURED INDICATOR SUMMARY.
 
-CRITICAL RULES:
-1. Your response MUST be EXACTLY one of these three words: Buy, Sell, or Do Nothing
-2. Do NOT provide any explanation, reasoning, or additional text
-3. Respond with ONLY the action word
-4. Do NOT show your thinking process or internal reasoning
+🚨 CHECK HIGH-VALUE SIGNALS FIRST (Most Reliable):
 
-Analyze the market data below and decide:
+1. MTF ALIGNMENT (Most Important!):
+   - STRONG_BULLISH (100%) = HIGH CONFIDENCE BUY
+   - STRONG_BEARISH (100%) = HIGH CONFIDENCE SELL
+   - BULLISH (>50%) = Favor BUY
+   - BEARISH (>50%) = Favor SELL
+   - MIXED (<50%) = DO NOTHING (wait for alignment)
 
-- "Buy" = Strong bullish signals, recommend opening/holding position
-- "Sell" = Bearish signals or major weakness, recommend closing position entirely
-- "Do Nothing" = Unclear/neutral signals, recommend holding current state unchanged
+2. RSI DIVERGENCE:
+   - BULLISH divergence = Strong BUY signal (price lower, RSI higher)
+   - BEARISH divergence = Strong SELL signal (price higher, RSI lower)
 
-IMPORTANT: "Do Nothing" means maintain current position (if we have one, keep it; if we don't, stay out)
+3. OBV DIVERGENCE:
+   - BULLISH = Smart money accumulating (BUY)
+   - BEARISH = Smart money distributing (SELL)
 
-RESPOND WITH ONLY ONE WORD: Buy, Sell, or Do Nothing"""
+4. MARKET REGIME:
+   - TRENDING_UP = Favor BUY
+   - TRENDING_DOWN = Favor SELL
+   - RANGING = DO NOTHING (wait for breakout)
+   - BREAKOUT = Follow breakout direction
+
+5. SWING S/R LEVELS:
+   - Near support = Better BUY entry
+   - Near resistance = Better SELL entry or take profit
+
+DECISION LOGIC:
+- BUY: MTF BULLISH + (divergence OR regime confirms) + not at resistance
+- SELL: MTF BEARISH + (divergence OR regime confirms) + not at support
+- DO NOTHING: MTF MIXED, conflicting signals, or RANGING regime
+
+RESPOND WITH EXACTLY ONE OF: Buy, Sell, or Do Nothing
+
+No explanation needed - just the action word."""
 
 import os
 import sys
 import pandas as pd
 import json
+import re
+from datetime import datetime, timedelta
 from termcolor import cprint
 
 # Add project root to path for imports
@@ -1162,20 +1436,51 @@ _project_root = str(Path(__file__).parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+# ============================================================================
+# DASHBOARD LOG TEE - Output to both console AND dashboard log file
+# ============================================================================
+LOG_FILE = "/tmp/bot_output.log"
+
+class TeeOutput:
+    """Write to both console and log file for dashboard visibility"""
+    def __init__(self, original_stdout, log_file_path):
+        self.terminal = original_stdout
+        self.log_file_path = log_file_path
+        # Create/clear log file on startup
+        with open(log_file_path, 'w') as f:
+            f.write(f"=== Trading Bot Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+
+    def write(self, message):
+        self.terminal.write(message)
+        try:
+            with open(self.log_file_path, 'a') as f:
+                # Strip ANSI color codes for log file
+                clean_message = re.sub(r'\x1b\[[0-9;]*m', '', message)
+                f.write(clean_message)
+                f.flush()
+        except:
+            pass  # Don't crash if log write fails
+
+    def flush(self):
+        self.terminal.flush()
+
+# Enable dashboard log tee
+sys.stdout = TeeOutput(sys.stdout, LOG_FILE)
+
 # Import alerts module
 try:
     from src.alerts import (
         alert_position_opened, alert_position_closed,
         alert_stop_loss_hit, alert_take_profit_hit,
         alert_trailing_stop_hit, alert_drawdown_warning,
-        alert_circuit_breaker, alert_critical_error
+        alert_circuit_breaker, alert_critical_error,
+        alert_partial_profit
     )
     ALERTS_AVAILABLE = True
 except ImportError:
     ALERTS_AVAILABLE = False
     cprint("⚠️ Alerts module not available", "yellow")
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
 import time
 from pathlib import Path
 
@@ -1254,6 +1559,12 @@ def save_trade_fill(symbol, qty, price, side="BUY"):
 def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
     """Monitor position P&L and exit if stop loss or take profit hit
 
+    Features:
+    - Stop Loss / Take Profit monitoring
+    - Trailing Stop Loss (optional)
+    - Partial Profit Taking (optional) - scale out at profit milestones
+    - Dynamic SL adjustment after partial takes
+
     Args:
         token: Token symbol to monitor
         check_interval: Seconds between P&L checks
@@ -1266,11 +1577,21 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
         cprint(f"   Stop Loss: -{STOP_LOSS_PERCENTAGE}% | Take Profit: +{TAKE_PROFIT_PERCENTAGE}%", "white")
         if USE_TRAILING_STOP:
             cprint(f"   Trailing Stop: Activates at +{TRAILING_STOP_ACTIVATION}%, trails {TRAILING_STOP_DISTANCE}% behind peak", "white")
+        if USE_PARTIAL_PROFITS:
+            cprint(f"   💰 Partial Profits: {PARTIAL_PROFIT_1_SIZE}% at +{PARTIAL_PROFIT_1_PCT}%", "white")
+            if PARTIAL_PROFIT_2_PCT > 0:
+                cprint(f"   💰 Partial Profits: {PARTIAL_PROFIT_2_SIZE}% at +{PARTIAL_PROFIT_2_PCT}%", "white")
+            if MOVE_SL_TO_BREAKEVEN:
+                cprint(f"   🛡️  SL moves to breakeven after first partial", "white")
 
         # Trailing stop tracking
         highest_pnl = 0
         trailing_stop_active = False
         trailing_stop_level = -STOP_LOSS_PERCENTAGE  # Start at regular stop loss
+
+        # Load partial profit state
+        partial_state = get_position_partial_state(token)
+        current_sl_pct = partial_state.get('current_sl_pct', -STOP_LOSS_PERCENTAGE)
 
         while True:
             # Get current position
@@ -1278,6 +1599,7 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
                 positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(token, HL_ACCOUNT)
                 if not im_in_pos:
                     cprint(f"✅ No position found for {token}", "green")
+                    clear_position_partial_state(token)  # Clean up state
                     return True
                 mid_price = n.get_current_price(token)
                 position_size = abs(float(pos_size)) * mid_price
@@ -1287,24 +1609,114 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
                 position = n.get_position(token)
                 if not position or position.get('position_amount', 0) == 0:
                     cprint(f"✅ No position found for {token}", "green")
+                    clear_position_partial_state(token)  # Clean up state
                     return True
                 pnl_pct = position.get('pnl_percentage', 0)
                 pnl_usd = position.get('pnl', 0)
                 position_size = abs(position.get('position_amount', 0)) * position.get('mark_price', 0)
+                is_long = position.get('position_amount', 0) > 0
+                entry_px = position.get('entry_price', 0)
             else:
                 position_usd = n.get_token_balance_usd(token)
                 if position_usd == 0:
                     cprint(f"✅ Position closed for {token}", "green")
+                    clear_position_partial_state(token)  # Clean up state
                     return True
                 position = {"position_amount": position_usd}
                 pnl_pct = 0
                 pnl_usd = 0
                 position_size = position_usd
+                is_long = True
+
+            # Initialize partial state for new positions
+            if partial_state.get('original_size', 0) == 0:
+                update_position_partial_state(
+                    token,
+                    original_size=position_size,
+                    entry_price=entry_px,
+                    current_sl_pct=-STOP_LOSS_PERCENTAGE
+                )
+                partial_state = get_position_partial_state(token)
 
             # For Aster/HyperLiquid, check P&L percentage
             if EXCHANGE in ["ASTER", "HYPERLIQUID"]:
 
-                # Update trailing stop if enabled
+                # ============================================================
+                # 💰 PARTIAL PROFIT TAKING
+                # ============================================================
+                if USE_PARTIAL_PROFITS and EXCHANGE == "HYPERLIQUID":
+                    # Check for first partial take profit
+                    if not partial_state.get('partial_1_taken', False) and pnl_pct >= PARTIAL_PROFIT_1_PCT:
+                        cprint(f"\n💰 PARTIAL PROFIT 1 TARGET HIT! P&L: {pnl_pct:.2f}% (target: +{PARTIAL_PROFIT_1_PCT}%)", "green", attrs=['bold'])
+                        cprint(f"   Taking {PARTIAL_PROFIT_1_SIZE}% of position...", "yellow")
+
+                        # Execute partial close
+                        success, closed_size, remaining_size = reduce_position_size(token, PARTIAL_PROFIT_1_SIZE, is_long, HL_ACCOUNT)
+
+                        if success:
+                            profit_locked = (PARTIAL_PROFIT_1_PCT / 100) * (position_size * PARTIAL_PROFIT_1_SIZE / 100)
+                            cprint(f"   ✅ Locked in ~${profit_locked:.2f} profit!", "green", attrs=['bold'])
+
+                            # Update state
+                            new_sl_pct = 0 if MOVE_SL_TO_BREAKEVEN else current_sl_pct
+                            update_position_partial_state(
+                                token,
+                                partial_1_taken=True,
+                                current_sl_pct=new_sl_pct
+                            )
+                            partial_state = get_position_partial_state(token)
+                            current_sl_pct = new_sl_pct
+
+                            if MOVE_SL_TO_BREAKEVEN:
+                                cprint(f"   🛡️  Stop Loss moved to BREAKEVEN (0%)", "cyan", attrs=['bold'])
+
+                            # Send alert if available
+                            if ALERTS_AVAILABLE:
+                                try:
+                                    alert_partial_profit(token, 1, pnl_pct, PARTIAL_PROFIT_1_SIZE, profit_locked, new_sl_pct)
+                                except:
+                                    pass  # Alert function may not exist yet
+
+                            play_trade_sound("partial_profit", profit_locked)
+
+                    # Check for second partial take profit
+                    if PARTIAL_PROFIT_2_PCT > 0 and partial_state.get('partial_1_taken', False) and \
+                       not partial_state.get('partial_2_taken', False) and pnl_pct >= PARTIAL_PROFIT_2_PCT:
+                        cprint(f"\n💰 PARTIAL PROFIT 2 TARGET HIT! P&L: {pnl_pct:.2f}% (target: +{PARTIAL_PROFIT_2_PCT}%)", "green", attrs=['bold'])
+                        cprint(f"   Taking {PARTIAL_PROFIT_2_SIZE}% of remaining position...", "yellow")
+
+                        # Execute partial close
+                        success, closed_size, remaining_size = reduce_position_size(token, PARTIAL_PROFIT_2_SIZE, is_long, HL_ACCOUNT)
+
+                        if success:
+                            profit_locked = (PARTIAL_PROFIT_2_PCT / 100) * (position_size * PARTIAL_PROFIT_2_SIZE / 100)
+                            cprint(f"   ✅ Locked in ~${profit_locked:.2f} more profit!", "green", attrs=['bold'])
+
+                            # Update state - move SL to first partial level
+                            new_sl_pct = PARTIAL_PROFIT_1_PCT if MOVE_SL_TO_PROFIT else current_sl_pct
+                            update_position_partial_state(
+                                token,
+                                partial_2_taken=True,
+                                current_sl_pct=new_sl_pct
+                            )
+                            partial_state = get_position_partial_state(token)
+                            current_sl_pct = new_sl_pct
+
+                            if MOVE_SL_TO_PROFIT:
+                                cprint(f"   🛡️  Stop Loss moved to +{PARTIAL_PROFIT_1_PCT}% (guaranteed profit!)", "cyan", attrs=['bold'])
+
+                            # Send alert if available
+                            if ALERTS_AVAILABLE:
+                                try:
+                                    alert_partial_profit(token, 2, pnl_pct, PARTIAL_PROFIT_2_SIZE, profit_locked, new_sl_pct)
+                                except:
+                                    pass
+
+                            play_trade_sound("partial_profit", profit_locked)
+
+                # ============================================================
+                # 📈 TRAILING STOP
+                # ============================================================
                 if USE_TRAILING_STOP:
                     if pnl_pct > highest_pnl:
                         highest_pnl = pnl_pct
@@ -1315,20 +1727,26 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
                         # Update trailing stop level
                         if trailing_stop_active:
                             trailing_stop_level = highest_pnl - TRAILING_STOP_DISTANCE
-                            cprint(f"📊 Position: ${position_size:,.2f} | P&L: {pnl_pct:+.2f}% | Peak: {highest_pnl:.2f}% | Trail Stop: {trailing_stop_level:+.2f}%", "cyan")
-                        else:
-                            cprint(f"📊 Position: ${position_size:,.2f} | P&L: {pnl_pct:+.2f}% | Peak: {highest_pnl:.2f}%", "cyan")
+                            # Trailing stop should not go below current SL (from partial profits)
+                            trailing_stop_level = max(trailing_stop_level, current_sl_pct)
+
+                    # Build status message
+                    partial_info = ""
+                    if USE_PARTIAL_PROFITS:
+                        p1 = "✓" if partial_state.get('partial_1_taken') else f"@{PARTIAL_PROFIT_1_PCT}%"
+                        p2 = "✓" if partial_state.get('partial_2_taken') else f"@{PARTIAL_PROFIT_2_PCT}%" if PARTIAL_PROFIT_2_PCT > 0 else ""
+                        partial_info = f" | Partials: [{p1}]{f'[{p2}]' if p2 else ''}"
+
+                    if trailing_stop_active:
+                        cprint(f"📊 ${position_size:,.2f} | P&L: {pnl_pct:+.2f}% | Peak: {highest_pnl:.2f}% | Trail: {trailing_stop_level:+.2f}% | SL: {current_sl_pct:+.2f}%{partial_info}", "cyan")
                     else:
-                        if trailing_stop_active:
-                            cprint(f"📊 Position: ${position_size:,.2f} | P&L: {pnl_pct:+.2f}% | Peak: {highest_pnl:.2f}% | Trail Stop: {trailing_stop_level:+.2f}%", "cyan")
-                        else:
-                            cprint(f"📊 Position: ${position_size:,.2f} | P&L: {pnl_pct:+.2f}%", "cyan")
+                        cprint(f"📊 ${position_size:,.2f} | P&L: {pnl_pct:+.2f}% | Peak: {highest_pnl:.2f}% | SL: {current_sl_pct:+.2f}%{partial_info}", "cyan")
 
                     # Check trailing stop
                     if trailing_stop_active and pnl_pct <= trailing_stop_level:
                         cprint(f"📉 TRAILING STOP HIT! P&L: {pnl_pct:.2f}% (trail stop: {trailing_stop_level:+.2f}%)", "yellow", attrs=['bold'])
                         cprint(f"💰 Locked in profit from peak of {highest_pnl:.2f}%!", "green")
-                        cprint(f"🔄 Closing position...", "yellow")
+                        cprint(f"🔄 Closing remaining position...", "yellow")
 
                         # 🔔 Send alert
                         if ALERTS_AVAILABLE:
@@ -1339,14 +1757,26 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
                             n.limit_sell(token, position_size, slippage=0, leverage=LEVERAGE)
                         else:
                             n.limit_buy(token, position_size, slippage=0, leverage=LEVERAGE)
+
+                        clear_position_partial_state(token)
                         return True
                 else:
-                    cprint(f"📊 Position: ${position_size:,.2f} | P&L: ${pnl_usd:,.2f} ({pnl_pct:+.2f}%)", "cyan")
+                    # No trailing stop - show basic status with partial info
+                    partial_info = ""
+                    if USE_PARTIAL_PROFITS:
+                        p1 = "✓" if partial_state.get('partial_1_taken') else f"@{PARTIAL_PROFIT_1_PCT}%"
+                        p2 = "✓" if partial_state.get('partial_2_taken') else f"@{PARTIAL_PROFIT_2_PCT}%" if PARTIAL_PROFIT_2_PCT > 0 else ""
+                        partial_info = f" | Partials: [{p1}]{f'[{p2}]' if p2 else ''}"
+                    cprint(f"📊 ${position_size:,.2f} | P&L: ${pnl_usd:,.2f} ({pnl_pct:+.2f}%) | SL: {current_sl_pct:+.2f}%{partial_info}", "cyan")
 
-                # Check stop loss
-                if pnl_pct <= -STOP_LOSS_PERCENTAGE:
-                    cprint(f"🛑 STOP LOSS HIT! P&L: {pnl_pct:.2f}% (target: -{STOP_LOSS_PERCENTAGE}%)", "red", attrs=['bold'])
-                    cprint(f"🔄 Closing position with limit orders...", "yellow")
+                # ============================================================
+                # 🛑 STOP LOSS CHECK (uses dynamic SL from partial profits)
+                # ============================================================
+                if pnl_pct <= current_sl_pct:
+                    sl_type = "STOP LOSS" if current_sl_pct < 0 else "PROFIT STOP" if current_sl_pct > 0 else "BREAKEVEN STOP"
+                    color = "red" if current_sl_pct < 0 else "yellow"
+                    cprint(f"🛑 {sl_type} HIT! P&L: {pnl_pct:.2f}% (trigger: {current_sl_pct:+.2f}%)", color, attrs=['bold'])
+                    cprint(f"🔄 Closing remaining position...", "yellow")
 
                     # 🔔 Send alert
                     if ALERTS_AVAILABLE:
@@ -1359,13 +1789,20 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
                     else:
                         n.limit_buy(token, position_size, slippage=0, leverage=LEVERAGE)
 
-                    play_trade_sound("close_loss", pnl_usd)  # 🔊 Stop loss sound
+                    if current_sl_pct >= 0:
+                        play_trade_sound("close_profit", pnl_usd)  # Breakeven or profit stop
+                    else:
+                        play_trade_sound("close_loss", pnl_usd)  # Regular stop loss
+
+                    clear_position_partial_state(token)
                     return True
 
-                # Check take profit
+                # ============================================================
+                # 🎯 TAKE PROFIT CHECK (full exit on remaining position)
+                # ============================================================
                 if pnl_pct >= TAKE_PROFIT_PERCENTAGE:
                     cprint(f"🎯 TAKE PROFIT HIT! P&L: {pnl_pct:.2f}% (target: +{TAKE_PROFIT_PERCENTAGE}%)", "green", attrs=['bold'])
-                    cprint(f"🔄 Closing position with limit orders...", "yellow")
+                    cprint(f"🔄 Closing remaining position...", "yellow")
 
                     # 🔔 Send alert
                     if ALERTS_AVAILABLE:
@@ -1379,6 +1816,7 @@ def monitor_position_pnl(token, check_interval=PNL_CHECK_INTERVAL):
                         n.limit_buy(token, position_size, slippage=0, leverage=LEVERAGE)
 
                     play_trade_sound("close_profit", pnl_usd)  # 🔊 Take profit sound
+                    clear_position_partial_state(token)
                     return True
 
             # Sleep before next check
@@ -1423,12 +1861,152 @@ def get_account_balance():
         traceback.print_exc()
         return 0
 
-def calculate_position_size(account_balance, confidence=None):
-    """Calculate position size based on account balance and confidence level
+# ============================================================================
+# 🔗 CORRELATION-AWARE POSITION SIZING
+# ============================================================================
+
+def get_correlation_group(symbol):
+    """
+    Find which correlation group(s) a symbol belongs to.
+
+    Args:
+        symbol: Token symbol (e.g., "BTC", "ETH")
+
+    Returns:
+        list: List of group names the symbol belongs to
+    """
+    groups = []
+    symbol_upper = symbol.upper()
+    for group_name, tokens in CORRELATION_GROUPS.items():
+        if symbol_upper in [t.upper() for t in tokens]:
+            groups.append(group_name)
+    return groups
+
+
+def get_current_positions_exposure():
+    """
+    Get current positions and their exposure by correlation group.
+
+    Returns:
+        dict: {
+            'positions': [(symbol, size_usd, is_long), ...],
+            'group_exposure': {group_name: total_usd, ...},
+            'total_exposure': total_usd
+        }
+    """
+    result = {
+        'positions': [],
+        'group_exposure': {},
+        'total_exposure': 0
+    }
+
+    try:
+        if EXCHANGE == "HYPERLIQUID":
+            positions = n.get_all_positions(HL_ACCOUNT)
+            if positions:
+                for pos in positions:
+                    symbol = pos.get('symbol', pos.get('coin', ''))
+                    size = abs(float(pos.get('szi', pos.get('size', 0))))
+                    entry_px = float(pos.get('entryPx', pos.get('entry_price', 0)))
+                    is_long = float(pos.get('szi', pos.get('size', 0))) > 0
+
+                    if size > 0 and entry_px > 0:
+                        size_usd = size * entry_px
+                        result['positions'].append((symbol, size_usd, is_long))
+                        result['total_exposure'] += size_usd
+
+                        # Add to correlation groups
+                        groups = get_correlation_group(symbol)
+                        for group in groups:
+                            if group not in result['group_exposure']:
+                                result['group_exposure'][group] = 0
+                            result['group_exposure'][group] += size_usd
+    except Exception as e:
+        cprint(f"⚠️ Error getting position exposure: {e}", "yellow")
+
+    return result
+
+
+def calculate_correlation_factor(symbol, account_balance):
+    """
+    Calculate position size reduction factor based on correlated holdings.
+
+    Args:
+        symbol: Token to potentially buy
+        account_balance: Current account balance
+
+    Returns:
+        dict: {
+            'factor': 0.0-1.0 (multiply position by this),
+            'reason': explanation string,
+            'correlated_positions': [(symbol, size), ...],
+            'group_exposure_pct': current exposure % in group
+        }
+    """
+    if not USE_CORRELATION_SIZING:
+        return {'factor': 1.0, 'reason': 'Correlation sizing disabled', 'correlated_positions': [], 'group_exposure_pct': 0}
+
+    result = {
+        'factor': 1.0,
+        'reason': 'No correlated positions',
+        'correlated_positions': [],
+        'group_exposure_pct': 0
+    }
+
+    try:
+        # Get correlation groups for this symbol
+        symbol_groups = get_correlation_group(symbol)
+        if not symbol_groups:
+            result['reason'] = f'{symbol} not in any correlation group'
+            return result
+
+        # Get current exposure
+        exposure = get_current_positions_exposure()
+
+        # Check each group the symbol belongs to
+        max_reduction = 0
+        for group in symbol_groups:
+            group_exposure = exposure['group_exposure'].get(group, 0)
+
+            if group_exposure > 0:
+                group_exposure_pct = (group_exposure / account_balance) * 100 if account_balance > 0 else 0
+                result['group_exposure_pct'] = max(result['group_exposure_pct'], group_exposure_pct)
+
+                # Find correlated positions
+                for pos_symbol, pos_size, is_long in exposure['positions']:
+                    if get_correlation_group(pos_symbol) and group in get_correlation_group(pos_symbol):
+                        if pos_symbol.upper() != symbol.upper():
+                            result['correlated_positions'].append((pos_symbol, pos_size))
+
+                # Check if we'd exceed max correlated exposure
+                if group_exposure_pct >= MAX_CORRELATED_EXPOSURE_PCT:
+                    result['factor'] = 0
+                    result['reason'] = f'Max {group} exposure ({MAX_CORRELATED_EXPOSURE_PCT}%) reached'
+                    return result
+
+                # Calculate reduction based on existing exposure
+                reduction = CORRELATION_REDUCTION_PCT / 100
+                max_reduction = max(max_reduction, reduction)
+
+        if max_reduction > 0 and result['correlated_positions']:
+            result['factor'] = 1.0 - max_reduction
+            corr_symbols = [p[0] for p in result['correlated_positions']]
+            result['reason'] = f'Holding correlated: {", ".join(corr_symbols)} (-{CORRELATION_REDUCTION_PCT}%)'
+
+    except Exception as e:
+        cprint(f"⚠️ Error calculating correlation factor: {e}", "yellow")
+        result['reason'] = f'Error: {e}'
+
+    return result
+
+
+def calculate_position_size(account_balance, confidence=None, symbol=None):
+    """Calculate position size based on account balance, confidence, and correlations
 
     Args:
         account_balance: Current account balance in USD
         confidence: AI confidence percentage (0-100). If None, uses MAX_POSITION_PERCENTAGE
+        symbol: Token symbol for correlation checking (optional)
 
     Returns:
         float: Position size in USD (notional value)
@@ -1449,11 +2027,28 @@ def calculate_position_size(account_balance, confidence=None):
         position_pct = MAX_POSITION_PERCENTAGE
         sizing_mode = "FIXED"
 
+    # Calculate correlation factor if symbol provided
+    correlation_info = None
+    correlation_factor = 1.0
+    if symbol and USE_CORRELATION_SIZING:
+        correlation_info = calculate_correlation_factor(symbol, account_balance)
+        correlation_factor = correlation_info['factor']
+
+        # If factor is 0, we shouldn't open this position
+        if correlation_factor == 0:
+            cprint(f"\n🔗 CORRELATION BLOCK: {correlation_info['reason']}", "red", attrs=['bold'])
+            cprint(f"   ❌ Position not allowed - max correlated exposure reached", "red")
+            return 0
+
     if EXCHANGE in ["ASTER", "HYPERLIQUID"]:
         # For leveraged exchanges: position_pct is the MARGIN to use
         # Notional position = margin × leverage
         margin_to_use = account_balance * (position_pct / 100)
         notional_position = margin_to_use * LEVERAGE
+
+        # Apply correlation reduction
+        original_position = notional_position
+        notional_position = notional_position * correlation_factor
 
         cprint(f"\n📊 Position Calculation ({EXCHANGE} - {sizing_mode}):", "yellow", attrs=['bold'])
         cprint(f"   💵 Account Balance: ${account_balance:,.2f}", "white")
@@ -1464,12 +2059,22 @@ def calculate_position_size(account_balance, confidence=None):
             cprint(f"   📈 Position %: {position_pct}%", "white")
         cprint(f"   💰 Margin to Use: ${margin_to_use:,.2f}", "green", attrs=['bold'])
         cprint(f"   ⚡ Leverage: {LEVERAGE}x", "white")
-        cprint(f"   💎 Notional Position: ${notional_position:,.2f}", "cyan", attrs=['bold'])
+
+        # Show correlation adjustment if applied
+        if correlation_info and correlation_factor < 1.0:
+            cprint(f"   🔗 Correlation: {correlation_info['reason']}", "yellow")
+            cprint(f"   📉 Reduced: ${original_position:,.2f} → ${notional_position:,.2f} ({correlation_factor*100:.0f}%)", "yellow")
+
+        cprint(f"   💎 Final Position: ${notional_position:,.2f}", "cyan", attrs=['bold'])
 
         return notional_position
     else:
         # For Solana: No leverage, direct position size
         position_size = account_balance * (position_pct / 100)
+
+        # Apply correlation reduction
+        original_size = position_size
+        position_size = position_size * correlation_factor
 
         cprint(f"\n📊 Position Calculation (SOLANA - {sizing_mode}):", "yellow", attrs=['bold'])
         cprint(f"   💵 USDC Balance: ${account_balance:,.2f}", "white")
@@ -1478,7 +2083,13 @@ def calculate_position_size(account_balance, confidence=None):
             cprint(f"   📈 Dynamic Size: {position_pct:.1f}%", "magenta")
         else:
             cprint(f"   📈 Position %: {position_pct}%", "white")
-        cprint(f"   💎 Position Size: ${position_size:,.2f}", "cyan", attrs=['bold'])
+
+        # Show correlation adjustment if applied
+        if correlation_info and correlation_factor < 1.0:
+            cprint(f"   🔗 Correlation: {correlation_info['reason']}", "yellow")
+            cprint(f"   📉 Reduced: ${original_size:,.2f} → ${position_size:,.2f} ({correlation_factor*100:.0f}%)", "yellow")
+
+        cprint(f"   💎 Final Position: ${position_size:,.2f}", "cyan", attrs=['bold'])
 
         return position_size
 
@@ -1489,7 +2100,14 @@ def calculate_position_size(account_balance, confidence=None):
 class TradingAgent:
     def __init__(self):
         # Check if using swarm mode or single model
-        if USE_SWARM_MODE:
+        # Check if AI is disabled
+        if not USE_AI:
+            cprint(f"\n📊 Initializing Trading Agent in PURE TECHNICAL ANALYSIS mode (no AI)...", "cyan", attrs=['bold'])
+            cprint("✅ AI disabled - using rule-based technical analysis", "green")
+            cprint("💰 Zero API costs - all analysis done locally", "green")
+            self.model = None
+            self.swarm = None
+        elif USE_SWARM_MODE:
             cprint(f"\n🌊 Initializing Trading Agent in SWARM MODE (6 AI consensus)...", "cyan", attrs=['bold'])
             self.swarm = SwarmAgent()
             cprint("✅ Swarm mode initialized with 6 AI models!", "green")
@@ -1704,60 +2322,218 @@ class TradingAgent:
                         return f"{v:.1f} - {strength}"
                     return "N/A"
 
-                # Multi-timeframe summary
+                # Multi-timeframe analysis using new MTF function
                 mtf_summary = ""
-                if USE_MULTI_TIMEFRAME:
-                    mtf_summary = "\n=== MULTI-TIMEFRAME ANALYSIS ===\n"
-                    for tf in MTF_TIMEFRAMES:
-                        if tf != DATA_TIMEFRAME:
-                            try:
-                                tf_data = n.get_data(token, timeframe=tf, bars=50, add_indicators=True)
-                                if not tf_data.empty:
-                                    tf_latest = tf_data.iloc[-1]
-                                    tf_rsi = tf_latest.get('rsi', None)
-                                    tf_trend = "BULLISH" if tf_latest.get('close', 0) > tf_latest.get('sma_50', 0) else "BEARISH"
-                                    tf_macd = tf_latest.get('MACD_12_26_9', 0)
-                                    tf_signal = tf_latest.get('MACDs_12_26_9', 0)
-                                    tf_macd_bias = "BULLISH" if tf_macd > tf_signal else "BEARISH"
-                                    rsi_str = f"{tf_rsi:.1f}" if tf_rsi else "N/A"
-                                    mtf_summary += f"{tf}: RSI={rsi_str} | Trend={tf_trend} | MACD={tf_macd_bias}\n"
-                            except Exception as mtf_err:
-                                cprint(f"⚠️ Multi-timeframe {tf} error: {mtf_err}", "yellow")
-                                mtf_summary += f"{tf}: Data unavailable\n"
+                mtf_alignment = "UNKNOWN"
+                mtf_alignment_pct = 0
+                mtf_result = None
 
-                # Build dynamic indicator sections based on toggles
-                core_indicators = f"Close Price: {fmt_price(close_val)}\n"
-                if INDICATORS.get("rsi", True):
-                    core_indicators += f"RSI (14): {fmt_rsi(rsi_val)}\n"
-                if INDICATORS.get("sma_20", True):
-                    core_indicators += f"SMA 20: {fmt_sma(sma20_val, close_val)}\n"
-                if INDICATORS.get("sma_50", True):
-                    core_indicators += f"SMA 50: {fmt_sma(sma50_val, close_val)}\n"
-                if INDICATORS.get("sma_200", True):
-                    core_indicators += f"SMA 200 (Long-term trend): {fmt_sma(sma200_val, close_val)}\n"
-                if INDICATORS.get("macd", True):
-                    core_indicators += f"MACD: {fmt_macd(macd_val, macd_signal)}\n"
-                if INDICATORS.get("bollinger", True):
-                    core_indicators += f"Bollinger Bands: {fmt_bb(bb_upper, bb_lower, close_val)}\n"
-                if INDICATORS.get("volume", True):
-                    core_indicators += f"Volume: {latest.get('volume', 'N/A'):,.0f}\n"
+                if USE_MULTI_TIMEFRAME and INDICATORS.get("mtf_analysis", True):
+                    try:
+                        mtf_result = n.get_mtf_analysis(token, timeframes=MTF_TIMEFRAMES)
+                        if mtf_result:
+                            mtf_alignment = mtf_result.get('alignment', 'UNKNOWN')
+                            mtf_alignment_pct = mtf_result.get('alignment_pct', 0)
 
-                additional_indicators = ""
-                if INDICATORS.get("atr", True):
-                    additional_indicators += f"ATR (Volatility): {f'${atr_val:.2f}' if atr_val and not pd.isna(atr_val) else 'N/A'}\n"
-                if INDICATORS.get("stochastic", True):
-                    additional_indicators += f"Stochastic: {fmt_stoch(stoch_k, stoch_d)}\n"
-                if INDICATORS.get("adx", True):
-                    additional_indicators += f"ADX (Trend Strength): {fmt_adx(adx_val)}\n"
-                if INDICATORS.get("cci", True):
-                    additional_indicators += f"CCI: {f'{cci_val:.1f}' if cci_val and not pd.isna(cci_val) else 'N/A'}\n"
-                if INDICATORS.get("williams_r", True):
-                    additional_indicators += f"Williams %R: {f'{willr_val:.1f}' if willr_val and not pd.isna(willr_val) else 'N/A'}\n"
+                            mtf_summary = "\n=== MULTI-TIMEFRAME ANALYSIS ===\n"
+                            for tf in MTF_TIMEFRAMES:
+                                tf_data = mtf_result['timeframes'].get(tf, {})
+                                trend = tf_data.get('trend', 'UNKNOWN')
+                                strength = tf_data.get('strength', 0)
+                                rsi = tf_data.get('rsi', 0)
+                                emoji = '🟢' if trend == 'BULLISH' else '🔴' if trend == 'BEARISH' else '⚪'
+                                mtf_summary += f"  {tf:>4}: {emoji} {trend:<10} (strength: {strength}%, RSI: {rsi:.1f})\n"
 
+                            # Add overall alignment
+                            align_emoji = '🟢🟢' if 'STRONG_BULLISH' in mtf_alignment else '🔴🔴' if 'STRONG_BEARISH' in mtf_alignment else '🟢' if 'BULLISH' in mtf_alignment else '🔴' if 'BEARISH' in mtf_alignment else '⚪'
+                            mtf_summary += f"\n  🎯 OVERALL: {align_emoji} {mtf_alignment} ({mtf_alignment_pct}% aligned)\n"
+                            mtf_summary += f"     Bullish TFs: {mtf_result.get('bullish_tfs', 0)}/{mtf_result.get('total_tfs', 0)}\n"
+                            mtf_summary += f"     Bearish TFs: {mtf_result.get('bearish_tfs', 0)}/{mtf_result.get('total_tfs', 0)}\n"
+
+                            cprint(f"   📊 MTF Alignment: {mtf_alignment} ({mtf_alignment_pct}%)", "cyan")
+                    except Exception as mtf_err:
+                        cprint(f"⚠️ Multi-timeframe analysis error: {mtf_err}", "yellow")
+                        mtf_summary = "\n=== MULTI-TIMEFRAME ANALYSIS ===\nData unavailable\n"
+
+                # ============================================================
+                # FETCH FUNDING RATE (HyperLiquid specific)
+                # ============================================================
+                funding_section = ""
+                funding_bias = "NEUTRAL"
+                if INDICATORS.get("funding_rate", True) and EXCHANGE == "HYPERLIQUID":
+                    try:
+                        funding_data = n.get_funding_rates(token)
+                        if funding_data:
+                            funding_rate = funding_data.get('funding_rate', 0) * 100  # Convert to percentage
+                            # Determine funding bias
+                            if funding_rate > 0.01:  # >0.01% = longs paying shorts
+                                funding_bias = "FAVOR_SHORT (longs paying shorts)"
+                            elif funding_rate < -0.01:  # <-0.01% = shorts paying longs
+                                funding_bias = "FAVOR_LONG (shorts paying longs)"
+                            else:
+                                funding_bias = "NEUTRAL"
+                            funding_section = f"Funding Rate: {funding_rate:.4f}% | Bias: {funding_bias}\n"
+                            cprint(f"   💰 Funding Rate: {funding_rate:.4f}% ({funding_bias})", "cyan")
+                    except Exception as e:
+                        funding_section = "Funding Rate: N/A\n"
+
+                # ============================================================
+                # GET NEW INDICATORS (Volume Ratio, ATR%, Price Changes)
+                # ============================================================
+                volume_ratio = latest.get('volume_ratio', 1.0)
+                atr_pct = latest.get('atr_pct', None)
+                price_change_1 = latest.get('price_change_1', None)
+                price_change_4 = latest.get('price_change_4', None)
+                price_change_24 = latest.get('price_change_24', None)
+                vwap_val = latest.get('vwap', None)
+                obv_val = latest.get('obv', None)
+                obv_sma = latest.get('obv_sma', None)
+                bb_width = latest.get('bb_width', None)
+
+                # ============================================================
+                # BUILD STRUCTURED INDICATOR SUMMARY
+                # ============================================================
+
+                # Trend Analysis
+                short_trend = "BULLISH" if close_val and sma20_val and close_val > sma20_val else "BEARISH"
+                medium_trend = "BULLISH" if close_val and sma50_val and close_val > sma50_val else "BEARISH"
+                long_trend = "BULLISH" if close_val and sma200_val and close_val > sma200_val else "BEARISH"
+                trend_strength = "STRONG" if adx_val and not pd.isna(adx_val) and adx_val > 25 else "WEAK"
+
+                # RSI Signal
+                rsi_signal = "OVERBOUGHT" if rsi_val and rsi_val > 70 else "OVERSOLD" if rsi_val and rsi_val < 30 else "NEUTRAL"
+
+                # MACD Signal
+                macd_signal_txt = "BULLISH" if macd_val and macd_signal and macd_val > macd_signal else "BEARISH"
+
+                # Volume Signal
+                volume_signal = "HIGH (spike)" if volume_ratio and volume_ratio > 1.5 else "LOW" if volume_ratio and volume_ratio < 0.5 else "NORMAL"
+
+                # OBV Trend
+                obv_trend = "BULLISH" if obv_val and obv_sma and obv_val > obv_sma else "BEARISH" if obv_val and obv_sma else "N/A"
+
+                # Volatility Regime
+                vol_regime = "HIGH" if atr_pct and atr_pct > 3.0 else "LOW" if atr_pct and atr_pct < 1.5 else "NORMAL"
+
+                # Bollinger Band Position
+                bb_position = "ABOVE_UPPER (overbought)" if bb_upper and close_val and close_val > bb_upper else \
+                              "BELOW_LOWER (oversold)" if bb_lower and close_val and close_val < bb_lower else "WITHIN_BANDS"
+
+                # VWAP Position
+                vwap_position = "ABOVE_VWAP (bullish)" if vwap_val and close_val and close_val > vwap_val else \
+                                "BELOW_VWAP (bearish)" if vwap_val and close_val else "N/A"
+
+                # ============================================================
+                # GET HIGH-VALUE SIGNALS (Divergence, S/R, Regime)
+                # ============================================================
+                rsi_divergence = latest.get('rsi_divergence', 'NONE')
+                rsi_div_strength = latest.get('rsi_divergence_strength', 0)
+                obv_divergence = latest.get('obv_divergence', 'NONE')
+                market_regime = latest.get('market_regime', 'UNKNOWN')
+                regime_strength = latest.get('regime_strength', 0)
+                nearest_resistance = latest.get('nearest_resistance', None)
+                nearest_support = latest.get('nearest_support', None)
+                dist_to_resistance = latest.get('distance_to_resistance_pct', None)
+                dist_to_support = latest.get('distance_to_support_pct', None)
+
+                # Format divergence signals
+                rsi_div_text = f"{rsi_divergence}"
+                if rsi_divergence != 'NONE':
+                    rsi_div_text += f" (strength: {rsi_div_strength:.1f})"
+                    if rsi_divergence == 'BULLISH':
+                        rsi_div_text += " ⚠️ REVERSAL SIGNAL: Price making lows but RSI rising"
+                    else:
+                        rsi_div_text += " ⚠️ REVERSAL SIGNAL: Price making highs but RSI falling"
+
+                obv_div_text = f"{obv_divergence}"
+                if obv_divergence == 'BULLISH':
+                    obv_div_text += " ⚠️ SMART MONEY ACCUMULATING (price down, volume up)"
+                elif obv_divergence == 'BEARISH':
+                    obv_div_text += " ⚠️ SMART MONEY DISTRIBUTING (price up, volume down)"
+
+                # Format S/R levels
+                sr_text = ""
+                if nearest_resistance and dist_to_resistance:
+                    sr_text += f"  Nearest Resistance: ${nearest_resistance:.4f} ({dist_to_resistance:+.2f}% away)\n"
+                if nearest_support and dist_to_support:
+                    sr_text += f"  Nearest Support: ${nearest_support:.4f} ({dist_to_support:+.2f}% away)\n"
+                if not sr_text:
+                    sr_text = "  No clear S/R levels detected\n"
+
+                # Format regime
+                regime_text = f"{market_regime}"
+                if market_regime == 'TRENDING_UP':
+                    regime_text += " 📈 (Strong uptrend - FAVOR LONGS)"
+                elif market_regime == 'TRENDING_DOWN':
+                    regime_text += " 📉 (Strong downtrend - FAVOR SHORTS)"
+                elif market_regime == 'RANGING':
+                    regime_text += " ↔️ (No clear trend - WAIT or range trade)"
+                elif market_regime == 'BREAKOUT':
+                    regime_text += " 💥 (Volatility breakout - HIGH CONVICTION SIGNAL)"
+                elif market_regime == 'TRANSITIONING':
+                    regime_text += " 🔄 (Trend changing - BE CAUTIOUS)"
+
+                # Format MTF alignment for AI
+                mtf_ai_text = f"{mtf_alignment} ({mtf_alignment_pct}% aligned)"
+                if mtf_alignment == 'STRONG_BULLISH':
+                    mtf_ai_text += " 🟢🟢 ALL TIMEFRAMES BULLISH - HIGH CONFIDENCE LONG"
+                elif mtf_alignment == 'STRONG_BEARISH':
+                    mtf_ai_text += " 🔴🔴 ALL TIMEFRAMES BEARISH - HIGH CONFIDENCE SHORT"
+                elif mtf_alignment == 'BULLISH':
+                    mtf_ai_text += " 🟢 Most timeframes bullish - FAVOR LONGS"
+                elif mtf_alignment == 'BEARISH':
+                    mtf_ai_text += " 🔴 Most timeframes bearish - FAVOR SHORTS"
+                elif mtf_alignment == 'MIXED':
+                    mtf_ai_text += " ⚪ Mixed signals - WAIT for alignment"
+
+                # ============================================================
+                # FORMAT STRUCTURED SUMMARY FOR AI
+                # ============================================================
+                structured_summary = f"""
+=== 📊 STRUCTURED INDICATOR SUMMARY ===
+
+🚨 HIGH-VALUE SIGNALS (Check These First!):
+  MTF Alignment: {mtf_ai_text}
+  RSI Divergence: {rsi_div_text}
+  OBV Divergence: {obv_div_text}
+  Market Regime: {regime_text}
+
+🎯 TREND ANALYSIS:
+  Short-term (SMA20): {short_trend}
+  Medium-term (SMA50): {medium_trend}
+  Long-term (SMA200): {long_trend}
+  Trend Strength (ADX): {trend_strength} ({f'{adx_val:.1f}' if adx_val and not pd.isna(adx_val) else 'N/A'})
+  MA Crossover: {crossover_signal}
+
+📈 MOMENTUM:
+  RSI (14): {f'{rsi_val:.1f}' if rsi_val and not pd.isna(rsi_val) else 'N/A'} → {rsi_signal}
+  MACD: {macd_signal_txt}
+  Price Change (1-bar): {f'{price_change_1:+.2f}%' if price_change_1 and not pd.isna(price_change_1) else 'N/A'}
+  Price Change (4-bar): {f'{price_change_4:+.2f}%' if price_change_4 and not pd.isna(price_change_4) else 'N/A'}
+  Price Change (24-bar): {f'{price_change_24:+.2f}%' if price_change_24 and not pd.isna(price_change_24) else 'N/A'}
+
+📊 VOLUME:
+  Volume Ratio (vs 20-avg): {f'{volume_ratio:.2f}x' if volume_ratio else 'N/A'} → {volume_signal}
+  OBV Trend: {obv_trend}
+
+🎯 SUPPORT & RESISTANCE (Swing Levels):
+{sr_text}
+⚡ VOLATILITY:
+  ATR: {f'${atr_val:.2f}' if atr_val and not pd.isna(atr_val) else 'N/A'} ({f'{atr_pct:.2f}%' if atr_pct and not pd.isna(atr_pct) else 'N/A'} of price)
+  Regime: {vol_regime}
+  BB Width: {f'{bb_width:.2f}%' if bb_width and not pd.isna(bb_width) else 'N/A'}
+  BB Position: {bb_position}
+
+💰 INSTITUTIONAL:
+  VWAP: {f'${vwap_val:.4f}' if vwap_val and not pd.isna(vwap_val) else 'N/A'} → {vwap_position}
+  {funding_section}
+"""
+
+                # Fibonacci Section (only if enabled)
                 fib_section = ""
                 if INDICATORS.get("fibonacci", True):
                     fib_section = f"""
-=== FIBONACCI RETRACEMENT LEVELS (50-bar range) ===
+=== 📐 FIBONACCI RETRACEMENT (200-bar range) ===
 Swing High: {f'${fib_high:.4f}' if fib_high and not pd.isna(fib_high) else 'N/A'}
 23.6% Level: {f'${fib_236:.4f}' if fib_236 and not pd.isna(fib_236) else 'N/A'}
 38.2% Level: {f'${fib_382:.4f}' if fib_382 and not pd.isna(fib_382) else 'N/A'}
@@ -1765,14 +2541,15 @@ Swing High: {f'${fib_high:.4f}' if fib_high and not pd.isna(fib_high) else 'N/A'
 61.8% Level (Golden): {f'${fib_618:.4f}' if fib_618 and not pd.isna(fib_618) else 'N/A'}
 78.6% Level: {f'${fib_786:.4f}' if fib_786 and not pd.isna(fib_786) else 'N/A'}
 Swing Low: {f'${fib_low:.4f}' if fib_low and not pd.isna(fib_low) else 'N/A'}
-Price vs Fib: {f'Near {fib_618:.4f} (61.8% - KEY LEVEL)' if fib_618 and close_val and abs(close_val - fib_618) / fib_618 < 0.01 else f'Near {fib_500:.4f} (50%)' if fib_500 and close_val and abs(close_val - fib_500) / fib_500 < 0.01 else f'Near {fib_382:.4f} (38.2%)' if fib_382 and close_val and abs(close_val - fib_382) / fib_382 < 0.01 else 'Between levels'}
 """
 
-                crossover_section = ""
-                if INDICATORS.get("golden_cross", True):
-                    crossover_section = f"""
-=== MA CROSSOVER ANALYSIS (Golden Cross / Death Cross) ===
-{crossover_signal}
+                # Build current price section
+                price_section = f"""
+=== 💵 CURRENT PRICE DATA ===
+Close Price: {fmt_price(close_val)}
+SMA 20: {fmt_sma(sma20_val, close_val)}
+SMA 50: {fmt_sma(sma50_val, close_val)}
+SMA 200: {fmt_sma(sma200_val, close_val)}
 """
 
                 formatted = f"""
@@ -1780,15 +2557,12 @@ TOKEN: {token}
 TIMEFRAME: {DATA_TIMEFRAME}
 ANALYSIS TIMESTAMP: {market_data.iloc[-1].get('timestamp', 'N/A')}
 
-=== CURRENT INDICATOR VALUES (MOST IMPORTANT) ===
-{core_indicators}
-=== ADDITIONAL INDICATORS ===
-{additional_indicators}
+{structured_summary}
+{price_section}
 {fib_section}
-{crossover_section}
 {mtf_summary}
-=== RECENT PRICE ACTION (Last 50 bars) ===
-{data_subset[[c for c in price_action_cols if c in data_subset.columns]].tail(50).to_string()}
+=== 📈 RECENT PRICE ACTION (Last 20 bars) ===
+{data_subset[[c for c in price_action_cols if c in data_subset.columns]].tail(20).to_string()}
 """
             else:
                 # If it's not a DataFrame, show what we got
@@ -1871,12 +2645,94 @@ ANALYSIS TIMESTAMP: {market_data.iloc[-1].get('timestamp', 'N/A')}
             return "NOTHING", 0, f"Error calculating consensus: {str(e)}"
 
     def analyze_market_data(self, token, market_data):
-        """Analyze market data using AI model (single or swarm mode)"""
+        """Analyze market data using AI model or pure technical analysis"""
         try:
             # Skip analysis for excluded tokens
             if token in EXCLUDED_TOKENS:
                 print(f"⚠️ Skipping analysis for excluded token: {token}")
                 return None
+
+            # ============= PURE TECHNICAL ANALYSIS (NO AI) =============
+            if not USE_AI:
+                cprint(f"\n📊 Analyzing {token} with PURE TECHNICAL ANALYSIS (no AI)", "cyan", attrs=['bold'])
+
+                # Get technical indicators from market data
+                if isinstance(market_data, pd.DataFrame) and not market_data.empty:
+                    latest = market_data.iloc[-1]
+
+                    # Extract indicators
+                    rsi = latest.get('rsi', 50)
+                    adx = latest.get('ADX_14', 20)
+                    macd = latest.get('MACD_12_26_9', 0)
+                    macd_signal = latest.get('MACDs_12_26_9', 0)
+                    sma_20 = latest.get('sma_20', 0)
+                    sma_50 = latest.get('sma_50', 0)
+                    close = latest.get('close', 0)
+
+                    # Rule-based analysis
+                    action = "NOTHING"
+                    confidence = 50
+                    reasons = []
+
+                    # Trend detection
+                    bullish_trend = close > sma_20 > sma_50 if sma_20 and sma_50 else False
+                    bearish_trend = close < sma_20 < sma_50 if sma_20 and sma_50 else False
+
+                    # Strong BUY signals
+                    if rsi < 35 and bullish_trend and adx > 25:
+                        action = "BUY"
+                        confidence = 75
+                        reasons.append(f"RSI oversold ({rsi:.0f}) + bullish trend + strong ADX ({adx:.0f})")
+                    elif rsi < 30 and macd > macd_signal:
+                        action = "BUY"
+                        confidence = 70
+                        reasons.append(f"RSI very oversold ({rsi:.0f}) + MACD bullish crossover")
+                    elif bullish_trend and adx > 30 and rsi < 60:
+                        action = "BUY"
+                        confidence = 65
+                        reasons.append(f"Strong bullish trend (ADX {adx:.0f}) + RSI not overbought")
+
+                    # Strong SELL signals
+                    elif rsi > 75 and bearish_trend and adx > 25:
+                        action = "SELL"
+                        confidence = 75
+                        reasons.append(f"RSI overbought ({rsi:.0f}) + bearish trend + strong ADX ({adx:.0f})")
+                    elif rsi > 80 and macd < macd_signal:
+                        action = "SELL"
+                        confidence = 70
+                        reasons.append(f"RSI very overbought ({rsi:.0f}) + MACD bearish crossover")
+                    elif bearish_trend and adx > 30 and rsi > 50:
+                        action = "SELL"
+                        confidence = 65
+                        reasons.append(f"Strong bearish trend (ADX {adx:.0f}) + RSI elevated")
+
+                    # No strong signal
+                    else:
+                        action = "NOTHING"
+                        confidence = 50
+                        reasons.append(f"No strong signal (RSI: {rsi:.0f}, ADX: {adx:.0f})")
+
+                    reasoning = " | ".join(reasons)
+
+                    # Add to recommendations DataFrame
+                    self.recommendations_df = pd.concat([
+                        self.recommendations_df,
+                        pd.DataFrame([{
+                            'token': token,
+                            'action': action,
+                            'confidence': confidence,
+                            'reasoning': reasoning
+                        }])
+                    ], ignore_index=True)
+
+                    # Save analysis report for dashboard
+                    save_analysis_report(token, action, confidence, reasoning)
+
+                    cprint(f"✅ Technical analysis complete: {action} ({confidence}%)", "green")
+                    return {'action': action, 'confidence': confidence, 'reasoning': reasoning}
+                else:
+                    cprint(f"❌ No market data for technical analysis", "red")
+                    return None
 
             # ============= SWARM MODE =============
             if USE_SWARM_MODE:
@@ -2266,7 +3122,7 @@ Example format:
 
                         # Step 2: Open opposite position
                         account_balance = get_account_balance()
-                        position_size = calculate_position_size(account_balance, confidence)
+                        position_size = calculate_position_size(account_balance, confidence, symbol=token)
 
                         if reverse_to_long:
                             cprint(f"📈 Step 2: Opening LONG position (${position_size:.2f})...", "green")
@@ -2279,7 +3135,7 @@ Example format:
                                 n.market_sell(token, position_size, slippage, leverage=LEVERAGE)
 
                         # CRITICAL: Verify the position actually opened in the correct direction
-                        time.sleep(2)  # Wait for position to settle
+                        time.sleep(0.3)  # Brief pause for position to register (reduced from 2s)
                         positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(token, HL_ACCOUNT)
 
                         # Verify position exists AND is in the expected direction
@@ -2304,7 +3160,9 @@ Example format:
                                 mid_price = n.get_current_price(token)
                                 fill_qty = abs(float(pos_size))
                                 save_trade_fill(token, fill_qty, mid_price, "BUY" if reverse_to_long else "SELL")
-                                n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
+                                # Use ATR-based or fixed stops
+                                stop_levels = get_dynamic_stop_levels(token, float(entry_px), is_long)
+                                n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, stop_levels['tp_pct'], stop_levels['sl_pct'], HL_ACCOUNT)
 
                                 # Save detailed auto-reversal analysis
                                 original_reasoning = row.get('reasoning', 'No analysis available')
@@ -2359,7 +3217,7 @@ Example format:
                 else:  # BUY
                     # Check if we can add to position
                     account_balance = get_account_balance()
-                    target_position = calculate_position_size(account_balance, confidence)
+                    target_position = calculate_position_size(account_balance, confidence, symbol=token)
                     max_position = account_balance * (MAX_POSITION_PERCENTAGE / 100)
 
                     if current_position < max_position * 0.9:  # Allow adding if below 90% of max
@@ -2385,7 +3243,9 @@ Example format:
                                             reasoning = row.get('reasoning', 'No analysis available')
                                             add_reasoning = f"📈 ADDING TO POSITION\n\nAdded: ${add_amount:.2f} to existing position\nNew Total Size: {abs(float(pos_size))} {token}\nEntry Price: ${entry_px:.4f}\nConfidence: {confidence}%\n\nOriginal Analysis:\n{reasoning[:500]}"
                                             save_trade_analysis(token, "ADD TO POSITION", confidence, float(entry_px), add_reasoning)
-                                            n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
+                                            # Use ATR-based or fixed stops
+                                            stop_levels = get_dynamic_stop_levels(token, float(entry_px), is_long)
+                                            n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, stop_levels['tp_pct'], stop_levels['sl_pct'], HL_ACCOUNT)
                             except Exception as e:
                                 cprint(f"❌ Error adding to position: {str(e)}", "white", "on_red")
                         else:
@@ -2404,7 +3264,7 @@ Example format:
                         # SHORT MODE ENABLED - Open short position
                         # Get account balance and calculate position size with dynamic sizing
                         account_balance = get_account_balance()
-                        position_size = calculate_position_size(account_balance, confidence)
+                        position_size = calculate_position_size(account_balance, confidence, symbol=token)
 
                         cprint(f"📉 SELL signal with no position - OPENING SHORT", "white", "on_red")
                         cprint(f"⚡ {EXCHANGE} mode: Opening ${position_size:,.2f} short position", "yellow")
@@ -2424,7 +3284,9 @@ Example format:
                                 time.sleep(2)  # Wait for position to settle
                                 positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_pct, is_long = n.get_position(token, HL_ACCOUNT)
                                 if im_in_pos and entry_px:
-                                    n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
+                                    # Use ATR-based or fixed stops
+                                    stop_levels = get_dynamic_stop_levels(token, float(entry_px), is_long)
+                                    n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, stop_levels['tp_pct'], stop_levels['sl_pct'], HL_ACCOUNT)
                         except Exception as e:
                             cprint(f"❌ Error opening short position: {str(e)}", "white", "on_red")
                 elif action == "NOTHING":
@@ -2438,7 +3300,12 @@ Example format:
                     else:
                         # Simple mode: Open position with dynamic sizing based on confidence
                         account_balance = get_account_balance()
-                        position_size = calculate_position_size(account_balance, confidence)
+                        position_size = calculate_position_size(account_balance, confidence, symbol=token)
+
+                        # Skip if position size is 0 (blocked by correlation limits)
+                        if position_size == 0:
+                            cprint(f"⏭️  Skipping entry - correlation limits reached", "yellow")
+                            continue
 
                         cprint(f"💰 Opening position with {'DYNAMIC' if USE_DYNAMIC_SIZING else 'FIXED'} sizing", "white", "on_green")
                         try:
@@ -2465,7 +3332,9 @@ Example format:
 
                                         # Place TP/SL orders on HyperLiquid
                                         if entry_px:
-                                            n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, TAKE_PROFIT_PERCENTAGE, STOP_LOSS_PERCENTAGE, HL_ACCOUNT)
+                                            # Use ATR-based or fixed stops
+                                            stop_levels = get_dynamic_stop_levels(token, float(entry_px), is_long)
+                                            n.place_tp_sl_orders(token, float(entry_px), abs(float(pos_size)), is_long, stop_levels['tp_pct'], stop_levels['sl_pct'], HL_ACCOUNT)
 
                                         # Save trade analysis for dashboard
                                         reasoning = row.get('reasoning', 'No analysis available')

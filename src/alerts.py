@@ -335,6 +335,37 @@ def alert_trailing_stop_hit(
     )
 
 
+def alert_partial_profit(
+    symbol: str,
+    partial_num: int,
+    pnl_pct: float,
+    size_pct: float,
+    profit_locked: float,
+    new_sl_pct: float
+):
+    """Alert when partial profit is taken"""
+    sl_status = "Breakeven (0%)" if new_sl_pct == 0 else f"+{new_sl_pct:.1f}%" if new_sl_pct > 0 else f"{new_sl_pct:.1f}%"
+
+    fields = [
+        {"name": "Partial #", "value": str(partial_num), "inline": True},
+        {"name": "Trigger P/L", "value": f"+{pnl_pct:.2f}%", "inline": True},
+        {"name": "Size Closed", "value": f"{size_pct}%", "inline": True},
+        {"name": "Profit Locked", "value": f"~${profit_locked:,.2f}", "inline": True},
+        {"name": "New Stop Loss", "value": sl_status, "inline": True},
+    ]
+
+    emoji = "💰" if partial_num == 1 else "💎"
+    color = "success"
+
+    send_discord_alert(
+        title=f"{emoji} Partial Profit #{partial_num}: {symbol}",
+        message=f"Took {size_pct}% off at +{pnl_pct:.2f}%\nLocked in ~${profit_locked:.2f}\nStop moved to {sl_status}",
+        color=color,
+        fields=fields,
+        alert_type="partial_profit"
+    )
+
+
 def alert_drawdown_warning(
     daily_pnl: float,
     daily_pnl_pct: float,

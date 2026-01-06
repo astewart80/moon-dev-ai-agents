@@ -1,5 +1,6 @@
         let currentSettings = {};
         let analysisReports = {};
+        let recommendations = [];
         let isSaving = false;  // Prevent fetchData from overwriting during save
 
         // Theme Toggle
@@ -62,9 +63,9 @@
                     document.getElementById('available').textContent = '$' + (data.account.available_margin || 0).toFixed(2);
 
                     const pnl = data.account.unrealized_pnl || 0;
-                    const pnlEl = document.getElementById('unrealized-pnl');
-                    pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
-                    pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'positive' : 'negative');
+                    const pnlEl = document.getElementById('unrealized-pnl-sub');
+                    pnlEl.textContent = 'Unrealized: ' + (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+                    pnlEl.style.color = pnl >= 0 ? 'var(--profit)' : 'var(--loss)';
 
                     // 24h P/L
                     const pnl24h = data.account.pnl_24h;
@@ -112,50 +113,66 @@
                             const slPrice = pos.sl_price;
                             const tpPct = pos.tp_pct;
                             const slPct = pos.sl_pct;
-                            // Get fills for this symbol
-                            const symbolFills = fills.filter(f => f.symbol === pos.symbol);
-                            const fillsHtml = symbolFills.length > 0 ? symbolFills.map(f => {
-                                const fillTime = new Date(f.timestamp).toLocaleString('en-US', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
-                                return '<div style="display:flex;justify-content:space-between;padding:4px 8px;background:#0a0a15;border-radius:3px;margin-top:4px;font-size:10px;">' +
-                                    '<span style="color:#00d4aa;">' + f.qty.toFixed(5) + ' @ $' + f.price.toLocaleString() + '</span>' +
-                                    '<span style="color:#666;">$' + f.value.toFixed(2) + ' - ' + fillTime + '</span>' +
-                                '</div>';
-                            }).join('') : '';
+                            const formatPrice = (p) => p < 0.01 ? p.toFixed(6) : p < 1 ? p.toFixed(5) : p < 10 ? p.toFixed(4) : p.toFixed(2);
+                            const roeClass = pos.roe_percent >= 0 ? 'positive' : 'negative';
                             return `
                                 <div class="position-card ${isLong ? 'long' : 'short'}">
-                                    <div class="position-header">
-                                        <span class="position-symbol">
-                                            ${pos.symbol}
+                                    <div class="position-top">
+                                        <div class="position-symbol">
+                                            <div class="position-icon">${pos.symbol.substring(0, 3)}</div>
+                                            <span class="position-name">${pos.symbol}</span>
                                             <span class="position-side ${isLong ? 'long' : 'short'}">${pos.side}</span>
-                                        </span>
-                                    </div>
-                                    <div class="position-stats">
-                                        <div class="position-stat">
-                                            <span class="position-stat-label">Total Qty (Avg)</span>
-                                            <span class="position-stat-value">${Math.abs(pos.size).toFixed(5)} @ $${pos.entry_price < 0.01 ? pos.entry_price.toFixed(6) : pos.entry_price < 1 ? pos.entry_price.toFixed(5) : pos.entry_price < 10 ? pos.entry_price.toFixed(4) : pos.entry_price.toFixed(2)}</span>
                                         </div>
-                                        <div class="position-stat">
-                                            <span class="position-stat-label">Value</span>
-                                            <span class="position-stat-value">$${(Math.abs(pos.size) * pos.entry_price).toFixed(2)}</span>
-                                        </div>
-                                        <div class="position-stat">
-                                            <span class="position-stat-label" style="color:var(--profit);">TP ${tpPct ? '(+' + tpPct + '%)' : '(Not Set)'}</span>
-                                            <span class="position-stat-value" style="color:var(--profit);">${tpPrice ? '$' + (tpPrice < 0.01 ? tpPrice.toFixed(6) : tpPrice < 1 ? tpPrice.toFixed(5) : tpPrice < 10 ? tpPrice.toFixed(4) : tpPrice.toFixed(2)) : '--'}</span>
-                                        </div>
-                                        <div class="position-stat">
-                                            <span class="position-stat-label" style="color:var(--loss);">SL ${slPct ? '(-' + slPct + '%)' : '(Not Set)'}</span>
-                                            <span class="position-stat-value" style="color:var(--loss);">${slPrice ? '$' + (slPrice < 0.01 ? slPrice.toFixed(6) : slPrice < 1 ? slPrice.toFixed(5) : slPrice < 10 ? slPrice.toFixed(4) : slPrice.toFixed(2)) : '--'}</span>
+                                        <div class="position-pnl">
+                                            <div class="position-pnl-value ${pnlClass}" title="ROE: ${pos.roe_percent >= 0 ? '+' : ''}${pos.roe_percent}%">
+                                                ${pos.roe_percent >= 0 ? '+' : ''}${pos.roe_percent}% ROE
+                                            </div>
+                                            <div class="position-pnl-usd">${pos.unrealized_pnl >= 0 ? '+' : ''}$${pos.unrealized_pnl.toFixed(2)} (${pos.pnl_percent >= 0 ? '+' : ''}${pos.pnl_percent.toFixed(2)}%)</div>
                                         </div>
                                     </div>
-                                    ${symbolFills.length > 0 ? '<div style="margin-top:8px;border-top:1px solid #1a1a2e;padding-top:8px;"><span style="font-size:10px;color:#666;">Individual Buys:</span>' + fillsHtml + '</div>' : ''}
-                                    <div class="position-pnl">
-                                        <span class="position-pnl-value ${pnlClass}">
-                                            ${pos.pnl_percent >= 0 ? '+' : ''}${pos.pnl_percent.toFixed(2)}% ($${pos.unrealized_pnl.toFixed(2)})
-                                        </span>
-                                        <div class="position-buttons">
-                                            <button class="btn btn-warning btn-reverse-position" onclick="reversePosition('${pos.symbol}')" title="Reverse position direction">Reverse</button>
-                                            <button class="btn btn-danger btn-close-position" onclick="closePosition('${pos.symbol}')" title="Close position">Close</button>
+                                    <div class="position-details">
+                                        <div class="position-detail">
+                                            <span class="position-detail-label">${pos.leverage}x</span>
                                         </div>
+                                        <div class="position-detail">
+                                            <span class="position-detail-label">Entry:</span>
+                                            <span class="position-detail-value">$${formatPrice(pos.entry_price)}</span>
+                                        </div>
+                                        <div class="position-detail">
+                                            <span class="position-detail-label">Mark:</span>
+                                            <span class="position-detail-value">${pos.mark_price ? '$' + formatPrice(pos.mark_price) : '--'}</span>
+                                        </div>
+                                        <div class="position-detail">
+                                            <span class="position-detail-label">Size:</span>
+                                            <span class="position-detail-value">$${(Math.abs(pos.size) * pos.entry_price).toFixed(2)}</span>
+                                        </div>
+                                        <div class="position-detail">
+                                            <span class="position-detail-label">Margin:</span>
+                                            <span class="position-detail-value">$${pos.margin_used ? pos.margin_used.toFixed(2) : '--'}</span>
+                                        </div>
+                                    </div>
+                                    <div class="position-details">
+                                        <div class="position-detail">
+                                            <span class="position-detail-label">Liq${pos.liq_distance ? ' ' + pos.liq_distance + '%' : ''}:</span>
+                                            <span class="position-detail-value sl">${pos.liq_price ? '$' + formatPrice(pos.liq_price) : '--'}</span>
+                                        </div>
+                                        <div class="position-detail">
+                                            <span class="position-detail-label">TP${tpPct ? ' +' + tpPct + '%' : ''}:</span>
+                                            <span class="position-detail-value tp">${tpPrice ? '$' + formatPrice(tpPrice) : '--'}</span>
+                                        </div>
+                                        <div class="position-detail">
+                                            <span class="position-detail-label">SL${slPct ? ' -' + slPct + '%' : ''}:</span>
+                                            <span class="position-detail-value sl">${slPrice ? '$' + formatPrice(slPrice) : '--'}</span>
+                                        </div>
+                                        <div class="position-detail ${pos.rr_ratio >= 2 ? 'rr-good' : pos.rr_ratio >= 1 ? 'rr-ok' : 'rr-bad'}">
+                                            <span class="position-detail-label">R:R</span>
+                                            <span class="position-detail-value">${pos.rr_ratio ? pos.rr_ratio + ':1' : '--'}</span>
+                                        </div>
+                                    </div>
+                                    <div class="position-actions">
+                                        <button class="btn btn-take-half" onclick="takeHalfProfit('${pos.symbol}')" title="Take 50% Profit" style="background: #ff9800; color: #000;">½</button>
+                                        <button class="btn btn-reverse-position" onclick="reversePosition('${pos.symbol}')" title="Reverse">Rev</button>
+                                        <button class="btn btn-danger btn-close-position" onclick="closePosition('${pos.symbol}')" title="Close">Close</button>
                                     </div>
                                 </div>
                             `;
@@ -174,34 +191,97 @@
                     });
                 }
 
-                // Update watchlist with all symbols (enabled and disabled)
-                if (data.settings && data.settings.all_symbols) {
+                // Fetch recommendations and update watchlist
+                try {
+                    const recsResponse = await fetch('/api/recommendations');
+                    const recsData = await recsResponse.json();
+                    recommendations = recsData.recommendations || [];
                     analysisReports = data.analysis_reports || {};
+
+                    // Update goal progress display
+                    if (recsData.goals) {
+                        const goals = recsData.goals;
+                        const progressPct = Math.min(150, Math.max(-50, goals.daily_progress_pct));
+                        const barWidth = progressPct >= 0 ? Math.min(100, progressPct) : Math.abs(progressPct);
+
+                        const goalBar = document.getElementById('goal-bar');
+                        const goalCurrent = document.getElementById('goal-current');
+                        const goalTarget = document.getElementById('goal-target');
+                        const tradingMode = document.getElementById('trading-mode');
+
+                        goalBar.style.width = barWidth + '%';
+                        goalBar.className = 'goal-bar' + (progressPct >= 100 ? ' exceeded' : progressPct < 0 ? ' negative' : '');
+
+                        const effectivePnl = goals.daily_pnl_effective;
+                        goalCurrent.textContent = (effectivePnl >= 0 ? '+$' : '-$') + Math.abs(effectivePnl).toFixed(0);
+                        goalCurrent.className = effectivePnl >= 0 ? 'profit' : 'loss';
+                        goalTarget.textContent = `/ $${goals.daily_target} daily (${progressPct.toFixed(0)}%)`;
+
+                        tradingMode.textContent = goals.trading_mode;
+                        tradingMode.className = 'trading-mode ' + goals.trading_mode.toLowerCase();
+                    }
+
                     const tokenList = document.getElementById('token-list');
-                    const allSymbols = data.settings.all_symbols;
-                    tokenList.innerHTML = Object.entries(allSymbols).map(([symbol, enabled]) => {
-                        const report = analysisReports[symbol] || {};
-                        const action = enabled ? (report.action || 'PENDING').toLowerCase() : 'disabled';
-                        const confidence = report.confidence || '-';
-                        const hasTpsl = report.tpsl_recommendations && Object.keys(report.tpsl_recommendations).length > 0;
-                        const tpslIcon = hasTpsl
-                            ? '<span title="TP/SL recommendations available" style="color:#00ff88;font-size:10px;margin-left:4px;">🎯</span>'
-                            : '<span title="No TP/SL recommendations" style="color:#ff6b6b;font-size:10px;margin-left:4px;">⚠</span>';
-                        return `
-                            <div class="token-item ${enabled ? '' : 'disabled'}">
-                                <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleSymbol('${symbol}', this.checked)" onclick="event.stopPropagation()">
-                                <div class="token-info" onclick="showAnalysis('${symbol}')" style="cursor:pointer;">
-                                    <div class="token-icon">${symbol.substring(0, 3)}</div>
-                                    <span class="token-name">${symbol}</span>
-                                    ${enabled ? tpslIcon : ''}
-                                </div>
-                                <div class="token-meta" onclick="showAnalysis('${symbol}')" style="cursor:pointer;">
-                                    <span class="token-confidence">${enabled ? confidence + '%' : 'OFF'}</span>
-                                    <span class="token-signal ${action}">${enabled ? (report.action || 'Pending') : 'Disabled'}</span>
-                                </div>
-                            </div>
-                        `;
-                    }).join('');
+                    const allSymbols = data.settings?.all_symbols || {};
+
+                    // Create a map of recommendations by symbol
+                    const recsMap = {};
+                    recommendations.forEach(rec => { recsMap[rec.symbol] = rec; });
+
+                    // Build watchlist: show all configured symbols
+                    const watchlistHtml = Object.entries(allSymbols)
+                        .filter(([symbol, enabled]) => enabled)
+                        .map(([symbol, enabled]) => {
+                            const rec = recsMap[symbol];
+                            const report = analysisReports[symbol] || {};
+
+                            if (rec) {
+                                // Has position - show recommendations data
+                                const action = (rec.action || 'HOLD').toLowerCase();
+                                const signalClass = action.includes('buy') || action.includes('profit') ? 'buy' :
+                                                   action.includes('sell') || action.includes('close') || action.includes('stop') ? 'sell' : 'nothing';
+                                const pnlClass = rec.pnl_pct >= 0 ? 'profit' : 'loss';
+                                return `
+                                    <div class="watchlist-item has-position" onclick="showAnalysis('${rec.symbol}')">
+                                        <div class="watchlist-left">
+                                            <div class="watchlist-icon">${rec.symbol.substring(0, 3)}</div>
+                                            <div class="watchlist-info">
+                                                <span class="watchlist-name">${rec.symbol}</span>
+                                                <span class="watchlist-meta">${rec.tf_confluence || '-'} · RSI ${rec.rsi_1h?.toFixed(0) || '-'}</span>
+                                            </div>
+                                        </div>
+                                        <div class="watchlist-right">
+                                            <div class="watchlist-pnl ${pnlClass}">${rec.pnl_pct >= 0 ? '+' : ''}${rec.pnl_pct?.toFixed(1) || '0'}%</div>
+                                            <span class="watchlist-signal ${signalClass}">${rec.action || 'HOLD'}</span>
+                                        </div>
+                                    </div>
+                                `;
+                            } else {
+                                // No position - show analysis report data
+                                const action = (report.action || 'SCAN').toLowerCase();
+                                const confidence = report.confidence || '-';
+                                const signalClass = action === 'buy' ? 'buy' : action === 'sell' ? 'sell' : 'nothing';
+                                return `
+                                    <div class="watchlist-item no-position" onclick="showAnalysis('${symbol}')">
+                                        <div class="watchlist-left">
+                                            <div class="watchlist-icon">${symbol.substring(0, 3)}</div>
+                                            <div class="watchlist-info">
+                                                <span class="watchlist-name">${symbol}</span>
+                                                <span class="watchlist-meta">No position</span>
+                                            </div>
+                                        </div>
+                                        <div class="watchlist-right">
+                                            <span class="watchlist-confidence">${confidence}%</span>
+                                            <span class="watchlist-signal ${signalClass}">${report.action || 'SCAN'}</span>
+                                        </div>
+                                    </div>
+                                `;
+                            }
+                        }).join('');
+
+                    tokenList.innerHTML = watchlistHtml || '<div class="no-positions">No symbols configured</div>';
+                } catch (e) {
+                    console.error('Error fetching recommendations:', e);
                 }
 
                 // Update logs - only auto-scroll if user is at bottom
@@ -296,32 +376,24 @@
                 const response = await fetch('/api/active-interval');
                 const data = await response.json();
 
-                // Update badge
+                // Update badge (safe element access)
                 const badge = document.getElementById('active-interval-badge');
-                if (data.auto_adjust) {
-                    badge.textContent = 'AUTO';
-                    badge.style.background = '#00aa55';
-                } else {
-                    badge.textContent = 'MANUAL';
-                    badge.style.background = '#ff9800';
+                if (badge) {
+                    if (data.auto_adjust) {
+                        badge.textContent = 'AUTO';
+                        badge.style.background = 'var(--profit)';
+                    } else {
+                        badge.textContent = 'MANUAL';
+                        badge.style.background = 'var(--warning)';
+                    }
                 }
 
                 // Update name and details
-                document.getElementById('active-interval-name').textContent = data.name || '--';
-                document.getElementById('active-interval-details').textContent =
-                    `(${data.interval_minutes}min scans, ${data.timeframe} candles)`;
+                const nameEl = document.getElementById('active-interval-name');
+                const detailsEl = document.getElementById('active-interval-details');
+                if (nameEl) nameEl.textContent = data.name || '--';
+                if (detailsEl) detailsEl.textContent = `${data.interval_minutes}min scans`;
 
-                // Update volatility
-                const volDisplay = document.getElementById('volatility-value');
-                if (data.volatility !== null && data.auto_adjust) {
-                    const volColor = data.volatility_level === 'High' ? '#ff4444' :
-                                     data.volatility_level === 'Low' ? '#00aa55' : '#ff9800';
-                    volDisplay.innerHTML = `<span style="color:${volColor}">${data.volatility}% ATR (${data.volatility_level})</span>`;
-                } else if (!data.auto_adjust) {
-                    volDisplay.textContent = 'Auto-adjust disabled';
-                } else {
-                    volDisplay.textContent = '--';
-                }
             } catch (error) {
                 console.error('Error loading active interval:', error);
             }
@@ -331,13 +403,12 @@
             try {
                 const response = await fetch('/api/goals');
                 const goals = await response.json();
-                if (goals.daily_profit_target) document.getElementById('goal-daily_profit').value = goals.daily_profit_target;
-                if (goals.weekly_profit_target) document.getElementById('goal-weekly_profit').value = goals.weekly_profit_target;
-                if (goals.max_daily_loss) document.getElementById('goal-max_loss').value = goals.max_daily_loss;
-                if (goals.target_account_balance) document.getElementById('goal-target_balance').value = goals.target_account_balance;
-                if (goals.risk_per_trade_percent) document.getElementById('goal-risk_percent').value = goals.risk_per_trade_percent;
-                if (goals.preferred_strategy) document.getElementById('goal-strategy').value = goals.preferred_strategy;
-                if (goals.custom_goal) document.getElementById('goal-custom').value = goals.custom_goal;
+                const setVal = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
+
+                setVal('goal-daily_profit', goals.daily_profit_target);
+                setVal('goal-weekly_profit', goals.weekly_profit_target);
+                setVal('goal-max_loss', goals.max_daily_loss);
+                setVal('goal-target_balance', goals.target_account_balance);
             } catch (error) {
                 console.error('Error loading goals:', error);
             }
@@ -346,14 +417,13 @@
         async function saveGoals() {
             showStatus('Saving goals...', '');
             try {
+                const getVal = (id, def) => { const el = document.getElementById(id); return el ? (parseFloat(el.value) || def) : def; };
+
                 const goals = {
-                    daily_profit_target: parseFloat(document.getElementById('goal-daily_profit').value) || 50,
-                    weekly_profit_target: parseFloat(document.getElementById('goal-weekly_profit').value) || 250,
-                    max_daily_loss: parseFloat(document.getElementById('goal-max_loss').value) || 30,
-                    target_account_balance: parseFloat(document.getElementById('goal-target_balance').value) || 1000,
-                    risk_per_trade_percent: parseFloat(document.getElementById('goal-risk_percent').value) || 5,
-                    preferred_strategy: document.getElementById('goal-strategy').value || 'conservative',
-                    custom_goal: document.getElementById('goal-custom').value || ''
+                    daily_profit_target: getVal('goal-daily_profit', 50),
+                    weekly_profit_target: getVal('goal-weekly_profit', 250),
+                    max_daily_loss: getVal('goal-max_loss', 30),
+                    target_account_balance: getVal('goal-target_balance', 1000)
                 };
                 const response = await fetch('/api/goals', {
                     method: 'POST',
@@ -362,7 +432,7 @@
                 });
                 const result = await response.json();
                 if (result.success) {
-                    showStatus('Goals saved! AI will consider these when trading.', 'success');
+                    showStatus('Goals saved!', 'success');
                 } else {
                     showStatus('Error: ' + result.message, 'error');
                 }
@@ -396,14 +466,90 @@
             try {
                 const response = await fetch('/api/indicators');
                 const data = await response.json();
-                if (data.indicators) {
-                    for (const [name, enabled] of Object.entries(data.indicators)) {
-                        const checkbox = document.getElementById('ind-' + name);
-                        if (checkbox) checkbox.checked = enabled;
-                    }
+                const container = document.getElementById('indicators-container');
+
+                if (data.indicators && container) {
+                    // Define indicator impacts
+                    const impacts = {
+                        'mtf_analysis': 'high',
+                        'rsi_obv_divergence': 'high',
+                        'swing_sr': 'high',
+                        'atr_volatility': 'medium',
+                        'market_regime': 'medium',
+                        'rsi': 'medium',
+                        'macd': 'medium',
+                        'ema': 'low',
+                        'sma': 'low',
+                        'volume': 'low'
+                    };
+
+                    container.innerHTML = Object.entries(data.indicators).map(([name, enabled]) => {
+                        const impact = impacts[name] || 'low';
+                        const displayName = name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                        return `
+                            <div class="indicator-item" onclick="toggleIndicator('${name}', !document.getElementById('ind-${name}').checked); document.getElementById('ind-${name}').checked = !document.getElementById('ind-${name}').checked;">
+                                <input type="checkbox" id="ind-${name}" ${enabled ? 'checked' : ''} onclick="event.stopPropagation(); toggleIndicator('${name}', this.checked);">
+                                <span>${displayName}</span>
+                                <span class="indicator-impact ${impact}">${impact.toUpperCase()}</span>
+                            </div>
+                        `;
+                    }).join('');
                 }
             } catch (error) {
                 console.error('Error loading indicators:', error);
+            }
+        }
+
+        async function manualClose() {
+            const symbol = document.getElementById('manual-symbol').value;
+            const percent = parseInt(document.getElementById('manual-close-pct').value);
+
+            if (!confirm(`Close ${percent}% of ${symbol} position?`)) return;
+
+            showStatus(`⚡ Closing ${percent}% of ${symbol}...`, 'warning');
+            const startTime = Date.now();
+
+            try {
+                const response = await fetch('/api/fast-close', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: symbol, percent: percent })
+                });
+                const data = await response.json();
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+                if (data.success) {
+                    showStatus(`✅ ${data.message}`, 'success');
+                } else {
+                    showStatus(`❌ ${data.message} (${elapsed}s)`, 'error');
+                }
+                setTimeout(fetchData, 1000);
+            } catch (error) {
+                showStatus('❌ Error: ' + error.message, 'error');
+            }
+        }
+
+        async function takeHalfProfit(symbol) {
+            showStatus(`⚡ Taking 50% profit on ${symbol}...`, 'warning');
+            const startTime = Date.now();
+
+            try {
+                const response = await fetch('/api/fast-close', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: symbol, percent: 50 })
+                });
+                const data = await response.json();
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+                if (data.success) {
+                    showStatus(`✅ ${data.message}`, 'success');
+                } else {
+                    showStatus(`❌ ${data.message} (${elapsed}s)`, 'error');
+                }
+                setTimeout(fetchData, 1000);
+            } catch (error) {
+                showStatus('❌ Error: ' + error.message, 'error');
             }
         }
 
@@ -421,17 +567,22 @@
             });
 
             showStatus('⚡ CLOSING ' + symbol + ' NOW...', 'warning');
+            const startTime = Date.now();
 
             try {
-                const response = await fetch('/api/close-position/' + symbol, { method: 'POST' });
+                const response = await fetch('/api/fast-close', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: symbol, percent: 100 })
+                });
                 const data = await response.json();
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
                 if (data.success) {
                     showStatus('✅ ' + data.message, 'success');
-                    // Immediate refresh
                     fetchData();
                 } else {
-                    showStatus('❌ ' + data.message, 'error');
+                    showStatus('❌ ' + data.message + ' (' + elapsed + 's)', 'error');
                 }
             } catch (error) {
                 showStatus('❌ Error: ' + error.message, 'error');
@@ -512,6 +663,40 @@
             }
         }
 
+        async function manualBuy(side) {
+            const symbol = document.getElementById('manual-symbol').value;
+            const size = parseFloat(document.getElementById('manual-size').value) || 50;
+            const leverage = parseInt(document.getElementById('manual-leverage').value) || 5;
+
+            const sideText = side === 'long' ? 'LONG' : 'SHORT';
+            if (!confirm(`Open ${sideText} position?\n\nSymbol: ${symbol}\nSize: $${size}\nLeverage: ${leverage}x`)) return;
+
+            showStatus(`⚡ Opening ${sideText} ${symbol}...`, '');
+            const startTime = Date.now();
+            try {
+                const response = await fetch('/api/fast-trade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        symbol: symbol,
+                        side: side,
+                        size_usd: size,
+                        leverage: leverage
+                    })
+                });
+                const data = await response.json();
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                if (data.success) {
+                    showStatus(`✅ ${data.message}`, 'success');
+                } else {
+                    showStatus(`❌ ${data.message} (${elapsed}s)`, 'error');
+                }
+                setTimeout(fetchData, 1000);
+            } catch (error) {
+                showStatus('❌ Error: ' + error.message, 'error');
+            }
+        }
+
         function showAnalysis(symbol) {
             const modal = document.getElementById('modal-overlay');
             document.getElementById('modal-title').textContent = symbol + ' Analysis';
@@ -531,7 +716,7 @@
         function showStatus(message, type) {
             const el = document.getElementById('command-status');
             el.textContent = message;
-            el.className = 'command-status visible ' + type;
+            el.className = 'toast visible ' + type;
             setTimeout(() => el.classList.remove('visible'), 3000);
         }
 
@@ -670,7 +855,7 @@
             selectedTimeframeHours = hours;
 
             // Update active button
-            document.querySelectorAll('.timeframe-btn').forEach(btn => {
+            document.querySelectorAll('.chart-tab[data-hours]').forEach(btn => {
                 btn.classList.remove('active');
                 if (parseInt(btn.dataset.hours) === hours) {
                     btn.classList.add('active');
@@ -843,8 +1028,8 @@
                 const response = await fetch('/api/confidence');
                 const data = await response.json();
                 const value = data.min_confidence || 70;
-                document.getElementById('setting-min_confidence').value = value;
-                document.getElementById('confidence-value').textContent = value;
+                const input = document.getElementById('setting-min_confidence');
+                if (input) input.value = value;
             } catch (e) {
                 console.error('Error loading confidence:', e);
             }
@@ -855,16 +1040,16 @@
             try {
                 const response = await fetch('/api/auto-tpsl');
                 const data = await response.json();
-                document.getElementById('auto-tpsl-enabled').checked = data.enabled || false;
-                document.getElementById('auto-tpsl-max-sl').value = data.max_sl || 7;
-                document.getElementById('auto-tpsl-mode').value = data.mode || 'moderate';
 
-                // Load ATR settings
-                document.getElementById('atr-stops-enabled').checked = data.use_atr || false;
-                document.getElementById('atr-period').value = data.atr_period || 14;
-                document.getElementById('atr-sl-mult').value = data.atr_sl_multiplier || 2.0;
-                document.getElementById('atr-tp-mult').value = data.atr_tp_multiplier || 3.0;
-                document.getElementById('atr-min-sl').value = data.atr_min_sl || 1.0;
+                // Load ATR settings (safe element access)
+                const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+                const setChecked = (id, val) => { const el = document.getElementById(id); if (el) el.checked = val; };
+
+                setChecked('atr-stops-enabled', data.use_atr || false);
+                setVal('atr-period', data.atr_period || 14);
+                setVal('atr-sl-mult', data.atr_sl_multiplier || 2.0);
+                setVal('atr-tp-mult', data.atr_tp_multiplier || 3.0);
+                setVal('atr-min-sl', data.atr_min_sl || 1.0);
             } catch (e) {
                 console.error('Error loading auto TP/SL settings:', e);
             }
@@ -873,16 +1058,17 @@
         // Save auto TP/SL settings
         async function saveAutoTpsl() {
             try {
+                const getVal = (id, def) => { const el = document.getElementById(id); return el ? (parseFloat(el.value) || def) : def; };
+                const getChecked = (id) => { const el = document.getElementById(id); return el ? el.checked : false; };
+
                 const settings = {
-                    enabled: document.getElementById('auto-tpsl-enabled').checked,
-                    max_sl: parseFloat(document.getElementById('auto-tpsl-max-sl').value) || 7,
-                    mode: document.getElementById('auto-tpsl-mode').value || 'moderate',
+                    enabled: true,  // Always enabled
                     // ATR settings
-                    use_atr: document.getElementById('atr-stops-enabled').checked,
-                    atr_period: parseInt(document.getElementById('atr-period').value) || 14,
-                    atr_sl_multiplier: parseFloat(document.getElementById('atr-sl-mult').value) || 2.0,
-                    atr_tp_multiplier: parseFloat(document.getElementById('atr-tp-mult').value) || 3.0,
-                    atr_min_sl: parseFloat(document.getElementById('atr-min-sl').value) || 1.0
+                    use_atr: getChecked('atr-stops-enabled'),
+                    atr_period: parseInt(getVal('atr-period', 14)),
+                    atr_sl_multiplier: getVal('atr-sl-mult', 2.0),
+                    atr_tp_multiplier: getVal('atr-tp-mult', 3.0),
+                    atr_min_sl: getVal('atr-min-sl', 1.0)
                 };
                 const response = await fetch('/api/auto-tpsl', {
                     method: 'POST',
@@ -891,11 +1077,11 @@
                 });
                 const result = await response.json();
                 if (result.success) {
-                    showStatus('Auto TP/SL settings saved', 'success');
+                    showStatus('ATR settings saved', 'success');
                 }
             } catch (e) {
                 console.error('Error saving auto TP/SL settings:', e);
-                showStatus('Failed to save auto TP/SL settings', 'error');
+                showStatus('Failed to save ATR settings', 'error');
             }
         }
 
@@ -1024,20 +1210,15 @@
                 const dot = document.getElementById('scanner-dot');
                 const text = document.getElementById('scanner-text');
                 const badge = document.getElementById('scanner-badge');
-                const timeEl = document.getElementById('scanner-time');
 
                 if (data.running) {
-                    dot.className = 'status-dot running';
-                    text.textContent = 'Scanner';
-                    timeEl.textContent = data.last_scan ? `Last: ${data.last_scan}` : 'Starting...';
-                    timeEl.style.color = 'var(--text-muted)';
-                    badge.title = 'Log Scanner Active - Monitors for missing TP/SL and errors';
+                    if (dot) dot.className = 'status-dot running';
+                    if (text) text.textContent = 'Scanner';
+                    if (badge) badge.title = 'Log Scanner Active - Monitors for missing TP/SL and errors';
                 } else {
-                    dot.className = 'status-dot stopped';
-                    text.textContent = 'Scanner OFF';
-                    timeEl.textContent = 'NOT RUNNING!';
-                    timeEl.style.color = 'var(--loss)';
-                    badge.title = 'WARNING: Log Scanner NOT RUNNING - Missing TP/SL will not be detected!';
+                    if (dot) dot.className = 'status-dot stopped';
+                    if (text) text.textContent = 'Scanner OFF';
+                    if (badge) badge.title = 'WARNING: Log Scanner NOT RUNNING!';
                 }
             } catch (e) {
                 console.error('Error loading scanner status:', e);
@@ -1054,41 +1235,29 @@
                 const dailyLimitEl = document.getElementById('daily-limit');
                 const alertEl = document.getElementById('circuit-breaker-alert');
                 const alertMsgEl = document.getElementById('circuit-breaker-msg');
-                const cbCard = document.getElementById('circuit-breaker-card');
 
                 if (data.error) {
-                    dailyPnlEl.textContent = '--';
+                    if (dailyPnlEl) dailyPnlEl.textContent = '--';
                     return;
                 }
 
                 // Update Daily P/L display
                 const pnl = data.daily_pnl || 0;
                 const pnlPct = data.daily_pnl_pct || 0;
-                dailyPnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2) + ' (' + (pnl >= 0 ? '+' : '') + pnlPct.toFixed(1) + '%)';
-                dailyPnlEl.style.color = pnl >= 0 ? 'var(--profit)' : 'var(--loss)';
+                if (dailyPnlEl) {
+                    dailyPnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2) + ' (' + (pnl >= 0 ? '+' : '') + pnlPct.toFixed(1) + '%)';
+                    dailyPnlEl.style.color = pnl >= 0 ? 'var(--profit)' : 'var(--loss)';
+                }
 
                 // Update limit display
-                dailyLimitEl.textContent = '-$' + (data.limit_usd || 50);
+                if (dailyLimitEl) dailyLimitEl.textContent = '-$' + (data.limit_usd || 50);
 
-                // Calculate progress to limit for visual indicator
-                const limit = data.limit_usd || 50;
-                const progress = Math.min(100, Math.abs(pnl) / limit * 100);
-
-                // Update circuit breaker card color based on progress
+                // Update circuit breaker alert
                 if (data.circuit_breaker_triggered) {
-                    cbCard.style.background = '#ff000033';
-                    cbCard.style.borderColor = '#ff4444';
-                    alertEl.style.display = 'block';
-                    alertMsgEl.textContent = 'Triggered at ' + (data.triggered_at || 'unknown');
-                } else if (pnl < 0 && progress >= 70) {
-                    // Warning zone (70%+ of limit used)
-                    cbCard.style.background = '#ff880033';
-                    cbCard.style.borderColor = '#ff8800';
-                    alertEl.style.display = 'none';
+                    if (alertEl) alertEl.style.display = 'block';
+                    if (alertMsgEl) alertMsgEl.textContent = 'Triggered at ' + (data.triggered_at || 'unknown');
                 } else {
-                    cbCard.style.background = '';
-                    cbCard.style.borderColor = '';
-                    alertEl.style.display = 'none';
+                    if (alertEl) alertEl.style.display = 'none';
                 }
 
             } catch (e) {
@@ -1254,3 +1423,180 @@
 
         loadPriceTicker();
         setInterval(loadPriceTicker, 5000);  // Update prices every 5 seconds
+
+        // Correlation Exposure
+        async function loadCorrelation() {
+            try {
+                const response = await fetch('/api/correlation');
+                const data = await response.json();
+                const container = document.getElementById('correlation-groups');
+                const status = document.getElementById('correlation-status');
+
+                if (data.error) {
+                    status.textContent = 'Error';
+                    status.style.color = '#ff4444';
+                    return;
+                }
+
+                if (!data.enabled) {
+                    status.textContent = 'Disabled';
+                    status.style.color = '#888';
+                    container.innerHTML = '<div style="color:#666;">Correlation sizing disabled</div>';
+                    return;
+                }
+
+                status.textContent = `${data.reduction_pct}% reduction`;
+                status.style.color = '#00aa55';
+
+                if (data.groups && data.groups.length > 0) {
+                    container.innerHTML = data.groups.map(g => {
+                        const barColor = g.at_limit ? '#ff4444' : (g.exposure_pct > g.max_pct * 0.7 ? '#ffaa00' : '#00aa55');
+                        const barWidth = Math.min(100, (g.exposure_pct / g.max_pct) * 100);
+                        const symbols = g.positions.map(p => p.symbol).join(', ');
+                        return `
+                            <div style="margin-bottom:6px;" title="${symbols}: $${g.exposure_usd.toFixed(0)}">
+                                <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+                                    <span style="color:#aaa;">${g.group.replace('_', ' ')}</span>
+                                    <span style="color:${barColor};">${g.exposure_pct}%/${g.max_pct}%</span>
+                                </div>
+                                <div style="height:4px;background:#1a1a2e;border-radius:2px;overflow:hidden;">
+                                    <div style="height:100%;width:${barWidth}%;background:${barColor};transition:width 0.3s;"></div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    container.innerHTML = '<div style="color:#666;">No correlated positions</div>';
+                }
+            } catch (e) {
+                console.error('Error loading correlation:', e);
+            }
+        }
+
+        loadCorrelation();
+        setInterval(loadCorrelation, 30000);  // Update correlation every 30 seconds
+
+        // AI Recommendations (Enhanced v2.0)
+        async function loadRecommendations(execute = false) {
+            const container = document.getElementById('recommendations-container');
+            const status = document.getElementById('recommendations-status');
+
+            container.innerHTML = '<div style="padding: 20px; color: var(--text-muted);">Analyzing positions (multi-TF + funding + fib)...</div>';
+            status.textContent = 'Running enhanced analysis...';
+
+            try {
+                const url = execute ? '/api/recommendations?execute=true' : '/api/recommendations';
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (data.error) {
+                    container.innerHTML = `<div style="padding: 20px; color: #ff4444;">Error: ${data.error}</div>`;
+                    status.textContent = 'Error';
+                    return;
+                }
+
+                if (!data.recommendations || data.recommendations.length === 0) {
+                    container.innerHTML = '<div style="padding: 20px; color: var(--text-muted);">No open positions to analyze</div>';
+                    status.textContent = `Updated: ${new Date(data.timestamp).toLocaleTimeString()}`;
+                    return;
+                }
+
+                // Render enhanced recommendations
+                container.innerHTML = data.recommendations.map(rec => {
+                    const actionColors = {
+                        'HOLD': '#888',
+                        'TAKE_PROFIT_50': '#00cc66',
+                        'TAKE_PROFIT_25': '#00aa55',
+                        'CLOSE': '#ff4444',
+                        'ERROR': '#ff4444'
+                    };
+                    const actionColor = actionColors[rec.action] || '#888';
+                    const pnlColor = rec.pnl_pct >= 0 ? '#00ff88' : '#ff4444';
+
+                    // Confluence colors
+                    const tfColors = {
+                        'STRONG_BULL': '#00ff88',
+                        'BULL': '#00aa55',
+                        'MIXED': '#888',
+                        'BEAR': '#ff8800',
+                        'STRONG_BEAR': '#ff4444'
+                    };
+                    const tfColor = tfColors[rec.tf_confluence] || '#888';
+
+                    // Trend emoji
+                    const trendEmoji = (t) => t === 'BULLISH' ? '🟢' : t === 'BEARISH' ? '🔴' : '⚪';
+
+                    // Funding color
+                    const fundingColors = {
+                        'LONGS_CROWDED': '#ff4444',
+                        'LONGS_PAYING': '#ff8800',
+                        'NEUTRAL': '#888',
+                        'SHORTS_PAYING': '#00aa55',
+                        'SHORTS_CROWDED': '#00ff88'
+                    };
+                    const fundingColor = fundingColors[rec.funding_signal] || '#888';
+
+                    return `
+                        <div style="padding: 12px; border-bottom: 1px solid var(--border);">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <span style="font-weight: 600; font-size: 15px;">${rec.symbol}</span>
+                                <span style="color: ${actionColor}; font-weight: 600; font-size: 12px; padding: 3px 10px; background: ${actionColor}22; border-radius: 4px;">
+                                    ${rec.action.replace(/_/g, ' ')}
+                                </span>
+                            </div>
+
+                            <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px;">
+                                <span>P&L: <span style="color: ${pnlColor}; font-weight: 600;">${rec.pnl_pct >= 0 ? '+' : ''}${rec.pnl_pct}%</span> <span style="color: var(--text-muted);">($${rec.pnl_usd >= 0 ? '+' : ''}${rec.pnl_usd.toFixed(0)})</span></span>
+                                <span>Confidence: <b>${rec.confidence}%</b></span>
+                            </div>
+
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; padding: 6px; background: var(--bg-secondary); border-radius: 4px;">
+                                ${rec.reason}
+                            </div>
+
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 10px;">
+                                <div style="color: var(--text-muted);">
+                                    <b>Timeframes:</b> ${trendEmoji(rec.tf_1h)}1H ${trendEmoji(rec.tf_4h)}4H ${trendEmoji(rec.tf_1d)}D
+                                    <span style="color: ${tfColor}; margin-left: 4px;">[${rec.tf_confluence}]</span>
+                                </div>
+                                <div style="color: var(--text-muted);">
+                                    <b>Funding:</b> <span style="color: ${fundingColor};">${rec.funding_signal}</span>
+                                    ${rec.funding_rate ? `(${(rec.funding_rate * 8760).toFixed(0)}%/yr)` : ''}
+                                </div>
+                            </div>
+
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 10px; margin-top: 4px;">
+                                <div style="color: var(--text-muted);">
+                                    <b>RSI:</b> 1H:${rec.rsi_1h || 'N/A'} 4H:${rec.rsi_4h || 'N/A'} | ADX:${rec.adx || 'N/A'}
+                                </div>
+                                <div style="color: var(--text-muted);">
+                                    <b>Fib:</b> ${rec.fib_signal} ${rec.fib_levels ? `(S:$${rec.fib_levels.support?.toLocaleString()} R:$${rec.fib_levels.resistance?.toLocaleString()})` : ''}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                // Show actions taken if executed
+                let statusText = `v2.0 | Updated: ${new Date(data.timestamp).toLocaleTimeString()}`;
+                if (data.executed && data.actions_taken && data.actions_taken.length > 0) {
+                    statusText += ` | Actions: ${data.actions_taken.join(', ')}`;
+                    showToast(data.actions_taken.join(', '), 'success');
+                }
+                status.textContent = statusText;
+
+            } catch (e) {
+                console.error('Error loading recommendations:', e);
+                container.innerHTML = `<div style="padding: 20px; color: #ff4444;">Error: ${e.message}</div>`;
+                status.textContent = 'Error loading recommendations';
+            }
+        }
+
+        async function executeRecommendations() {
+            if (confirm('Execute all high-confidence (≥70%) recommendations?')) {
+                await loadRecommendations(true);
+            }
+        }
+
+        // Auto-refresh recommendations every 2 minutes
+        setInterval(() => loadRecommendations(false), 120000);

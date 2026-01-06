@@ -37,6 +37,34 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ============================================================================
+# CONNECTION POOLING & CACHING - Reuse connections for SPEED
+# ============================================================================
+_cached_info = None
+_cached_exchange = {}  # keyed by account address
+_cached_decimals = {}  # Cache symbol decimals to avoid repeated API calls
+
+def get_cached_info():
+    """Get cached Info object (creates once, reuses for all calls)"""
+    global _cached_info
+    if _cached_info is None:
+        _cached_info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    return _cached_info
+
+def get_cached_exchange(account):
+    """Get cached Exchange object for an account"""
+    global _cached_exchange
+    addr = account.address
+    if addr not in _cached_exchange:
+        _cached_exchange[addr] = Exchange(account, constants.MAINNET_API_URL)
+    return _cached_exchange[addr]
+
+def reset_connections():
+    """Reset all cached connections (call if connections go stale)"""
+    global _cached_info, _cached_exchange
+    _cached_info = None
+    _cached_exchange = {}
+
+# ============================================================================
 # CONFIGURATION
 # ============================================================================
 DEFAULT_LEVERAGE = 3  # Change this to adjust leverage globally (1-50x on HyperLiquid)
@@ -83,7 +111,14 @@ def ask_bid(symbol):
     return ask, bid, l2_data
 
 def get_sz_px_decimals(symbol):
-    """Get size and price decimals for a symbol"""
+    """Get size and price decimals for a symbol - CACHED for speed"""
+    global _cached_decimals
+
+    # Return cached values if available (saves 2 API calls)
+    if symbol in _cached_decimals:
+        cached = _cached_decimals[symbol]
+        return cached['sz'], cached['px']
+
     url = 'https://api.hyperliquid.xyz/info'
     headers = {'Content-Type': 'application/json'}
     data = {'type': 'meta'}
@@ -111,14 +146,17 @@ def get_sz_px_decimals(symbol):
     else:
         px_decimals = 0
 
+    # Cache for future calls
+    _cached_decimals[symbol] = {'sz': sz_decimals, 'px': px_decimals}
+
     print(f'{symbol} price: {ask} | sz decimals: {sz_decimals} | px decimals: {px_decimals}')
     return sz_decimals, px_decimals
 
 def get_position(symbol, account):
-    """Get current position for a symbol"""
+    """Get current position for a symbol - uses cached connection for speed"""
     print(f'{colored("Getting position for", "cyan")} {colored(symbol, "yellow")}')
 
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    info = get_cached_info()  # FAST: reuse connection
     user_state = info.user_state(account.address)
 
     positions = []
@@ -152,9 +190,9 @@ def get_position(symbol, account):
     return positions, im_in_pos, pos_size, pos_sym, entry_px, pnl_perc, is_long
 
 def set_leverage(symbol, leverage, account):
-    """Set leverage for a symbol"""
+    """Set leverage for a symbol - uses cached connection"""
     print(f'Setting leverage for {symbol} to {leverage}x')
-    exchange = Exchange(account, constants.MAINNET_API_URL)
+    exchange = get_cached_exchange(account)
 
     # Update leverage (is_cross=True for cross margin)
     result = exchange.update_leverage(leverage, symbol, is_cross=True)
@@ -184,10 +222,10 @@ def adjust_leverage_usd_size(symbol, usd_size, leverage, account):
     return leverage, pos_size
 
 def cancel_all_orders(account):
-    """Cancel all open orders"""
+    """Cancel all open orders - uses cached connections"""
     print(colored('🚫 Cancelling all orders', 'yellow'))
-    exchange = Exchange(account, constants.MAINNET_API_URL)
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    exchange = get_cached_exchange(account)
+    info = get_cached_info()
 
     # Get all open orders
     open_orders = info.open_orders(account.address)
@@ -231,19 +269,29 @@ def place_tp_sl_orders(symbol, entry_price, position_size, is_long, tp_percent, 
     tp_percent = float(tp_percent)
     sl_percent = float(sl_percent)
 
-    exchange = Exchange(account, constants.MAINNET_API_URL)
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    # Use cached connections for SPEED
+    exchange = get_cached_exchange(account)
+    info = get_cached_info()
 
     # Cancel existing orders for this symbol to prevent duplicates
     open_orders = info.open_orders(account.address)
     symbol_orders = [o for o in open_orders if o['coin'] == symbol]
     if symbol_orders:
         print(f"   🗑️ Cancelling {len(symbol_orders)} existing orders for {symbol}...")
-        for order in symbol_orders:
-            try:
-                exchange.cancel(order['coin'], order['oid'])
-            except Exception as e:
-                print(colored(f"   ⚠️ Could not cancel order {order['oid']}: {e}", 'yellow'))
+        # Try batch cancel first (faster)
+        try:
+            cancel_requests = [{"coin": o['coin'], "oid": o['oid']} for o in symbol_orders]
+            if len(cancel_requests) > 1:
+                exchange.bulk_cancel(cancel_requests)
+            else:
+                exchange.cancel(symbol_orders[0]['coin'], symbol_orders[0]['oid'])
+        except:
+            # Fallback to sequential
+            for order in symbol_orders:
+                try:
+                    exchange.cancel(order['coin'], order['oid'])
+                except Exception as e:
+                    print(colored(f"   ⚠️ Could not cancel order {order['oid']}: {e}", 'yellow'))
         print(f"   ✅ Cleared existing orders")
 
     sz_decimals, px_decimals = get_sz_px_decimals(symbol)
@@ -298,8 +346,8 @@ def place_tp_sl_orders(symbol, entry_price, position_size, is_long, tp_percent, 
     return results
 
 def limit_order(coin, is_buy, sz, limit_px, reduce_only, account):
-    """Place a limit order"""
-    exchange = Exchange(account, constants.MAINNET_API_URL)
+    """Place a limit order - uses cached connection"""
+    exchange = get_cached_exchange(account)
 
     rounding = get_sz_px_decimals(coin)[0]
     sz = round(sz, rounding)
@@ -321,49 +369,40 @@ def limit_order(coin, is_buy, sz, limit_px, reduce_only, account):
     return order_result
 
 def kill_switch(symbol, account):
-    """Close position at market price"""
-    print(colored(f'🔪 KILL SWITCH ACTIVATED for {symbol}', 'red', attrs=['bold']))
+    """Close position at market price - ULTRA FAST using market_close()"""
+    print(colored(f'🔪 KILL SWITCH: {symbol}', 'red', attrs=['bold']))
 
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
-    exchange = Exchange(account, constants.MAINNET_API_URL)
+    exchange = get_cached_exchange(account)
 
-    # Get current position
-    positions, im_in_pos, pos_size, _, _, _, is_long = get_position(symbol, account)
+    # Use market_close() - single API call, fastest method
+    result = exchange.market_close(symbol)
 
-    if not im_in_pos:
-        print(colored('No position to close', 'yellow'))
-        return
-
-    # Place market order to close
-    side = not is_long  # Opposite side to close
-    abs_size = abs(float(pos_size))
-
-    print(f'Closing {"LONG" if is_long else "SHORT"} position: {abs_size} {symbol}')
-
-    # Get current price for market order
-    ask, bid, _ = ask_bid(symbol)
-
-    # For closing positions with IOC orders:
-    # - Closing long: Sell below bid (undersell)
-    # - Closing short: Buy above ask (overbid)
-    if is_long:
-        close_price = bid * 0.999  # Undersell to close long
+    if result.get('status') == 'ok':
+        statuses = result.get('response', {}).get('data', {}).get('statuses', [])
+        if statuses and 'filled' in statuses[0]:
+            filled = statuses[0]['filled']
+            print(colored(f'✅ Closed {symbol} @ ${filled.get("avgPx", "?")}', 'green'))
+        else:
+            print(colored(f'✅ {symbol} closed', 'green'))
     else:
-        close_price = ask * 1.001  # Overbid to close short
+        print(colored(f'⚠️ Close result: {result}', 'yellow'))
 
-    # Round to appropriate decimals for BTC
-    if symbol == 'BTC':
-        close_price = round(close_price)
-    else:
-        close_price = round(close_price, 1)
+    return result
 
-    print(f'   Placing IOC at ${close_price} to close position')
 
-    # Place reduce-only order to close
-    order_result = exchange.order(symbol, side, abs_size, close_price, {"limit": {"tif": "Ioc"}}, reduce_only=True)
+def kill_switch_with_size(symbol, pos_size, is_long, account):
+    """Close position when we already have position data - FASTEST (skips position fetch)"""
+    print(colored(f'🔪 FAST CLOSE: {symbol}', 'red', attrs=['bold']))
 
-    print(colored('✅ Kill switch executed - position closed', 'green'))
-    return order_result
+    exchange = get_cached_exchange(account)
+
+    # Use market_close() - fastest single API call
+    result = exchange.market_close(symbol)
+
+    if result.get('status') == 'ok':
+        print(colored(f'✅ Closed {symbol}', 'green'))
+
+    return result
 
 def pnl_close(symbol, target, max_loss, account):
     """Close position if PnL target or stop loss is hit"""
@@ -450,8 +489,8 @@ def market_buy(symbol, usd_size, account, auto_tpsl=True, tp_pct=10.0, sl_pct=3.
     print(f'   Placing IOC buy at ${buy_price} (0.5% above ask ${ask})')
     print(f'   Position size: {pos_size} {symbol} (value: ${pos_size * buy_price:.2f})')
 
-    # Place IOC order above ask to ensure fill
-    exchange = Exchange(account, constants.MAINNET_API_URL)
+    # Place IOC order above ask to ensure fill - use cached exchange for speed
+    exchange = get_cached_exchange(account)
     order_result = exchange.order(symbol, True, pos_size, buy_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
 
     print(colored(f'✅ Market buy executed: {pos_size} {symbol} at ${buy_price}', 'green'))
@@ -462,7 +501,7 @@ def market_buy(symbol, usd_size, account, auto_tpsl=True, tp_pct=10.0, sl_pct=3.
         if statuses and 'filled' in statuses[0]:
             print(colored(f'🎯 Auto-setting TP/SL (TP: +{tp_pct}%, SL: -{sl_pct}%)', 'cyan'))
             try:
-                time.sleep(0.5)  # Brief pause to ensure position is registered
+                time.sleep(0.1)  # Minimal pause (reduced from 0.5s)
                 # Get FULL position (not just this fill) for correct TP/SL sizing
                 positions, im_in_pos, total_size, pos_sym, avg_entry, pnl_pct, is_long = get_position(symbol, account)
                 if im_in_pos:
@@ -512,8 +551,8 @@ def market_sell(symbol, usd_size, account):
     print(f'   Placing IOC sell at ${sell_price} (0.1% below bid ${bid})')
     print(f'   Position size: {pos_size} {symbol} (value: ${pos_size * sell_price:.2f})')
 
-    # Place IOC order below bid to ensure fill
-    exchange = Exchange(account, constants.MAINNET_API_URL)
+    # Place IOC order below bid to ensure fill - use cached exchange for speed
+    exchange = get_cached_exchange(account)
     order_result = exchange.order(symbol, False, pos_size, sell_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
 
     print(colored(f'✅ Market sell executed: {pos_size} {symbol} at ${sell_price}', 'red'))
@@ -542,8 +581,8 @@ def get_balance(account):
     return balance
 
 def get_all_positions(account):
-    """Get all open positions"""
-    info = Info(constants.MAINNET_API_URL, skip_ws=True)
+    """Get all open positions - uses cached connection for speed"""
+    info = get_cached_info()
     user_state = info.user_state(account.address)
 
     positions = []
@@ -558,6 +597,48 @@ def get_all_positions(account):
             })
 
     return positions
+
+
+def close_all_positions(account):
+    """ULTRA FAST close all positions - single API call per position using market_close()"""
+    print(colored('🔪 CLOSING ALL POSITIONS', 'red', attrs=['bold']))
+
+    exchange = get_cached_exchange(account)
+    info = get_cached_info()
+
+    # Get all positions in one API call
+    user_state = info.user_state(account.address)
+    positions = [p for p in user_state["assetPositions"] if float(p["position"]["szi"]) != 0]
+
+    if not positions:
+        print(colored('✅ No positions to close', 'green'))
+        return []
+
+    print(f'   Found {len(positions)} position(s)')
+
+    results = []
+    for pos in positions:
+        symbol = pos["position"]["coin"]
+        size = float(pos["position"]["szi"])
+        direction = "LONG" if size > 0 else "SHORT"
+
+        # Use market_close() - fastest method (single API call)
+        result = exchange.market_close(symbol)
+
+        if result.get('status') == 'ok':
+            statuses = result.get('response', {}).get('data', {}).get('statuses', [])
+            if statuses and 'filled' in statuses[0]:
+                filled = statuses[0]['filled']
+                print(colored(f'   ✅ {symbol} {direction} closed @ ${filled.get("avgPx", "?")}', 'green'))
+            else:
+                print(colored(f'   ✅ {symbol} closed', 'green'))
+        else:
+            print(colored(f'   ⚠️ {symbol}: {result}', 'yellow'))
+
+        results.append({'symbol': symbol, 'result': result})
+
+    print(colored('✅ All positions closed', 'green', attrs=['bold']))
+    return results
 
 # ============================================================================
 # ADDITIONAL HELPER FUNCTIONS (from nice_funcs_hl.py)
@@ -713,7 +794,13 @@ def _process_data_to_df(snapshot_data):
     return pd.DataFrame()
 
 def add_technical_indicators(df):
-    """Add technical indicators to the dataframe"""
+    """Add technical indicators to the dataframe
+
+    Optimized indicator set:
+    - TIER 1 (Essential): SMA, RSI, MACD, ATR, ADX, OBV, Volume Ratio
+    - TIER 2 (Useful): Bollinger, VWAP, Fibonacci (200-bar)
+    - TIER 3 (Disabled in config but still calculated): Stochastic, Williams %R, CCI
+    """
     if df.empty:
         return df
 
@@ -724,47 +811,68 @@ def add_technical_indicators(df):
         numeric_cols = ['open', 'high', 'low', 'close', 'volume']
         df[numeric_cols] = df[numeric_cols].astype('float64')
 
-        # Add basic indicators
+        # ============================================================
+        # TIER 1: Essential Indicators
+        # ============================================================
+
+        # Moving Averages - Trend Analysis
         df['sma_20'] = ta.sma(df['close'], length=20)
         df['sma_50'] = ta.sma(df['close'], length=50)
         df['sma_200'] = ta.sma(df['close'], length=200)
         df['ema_12'] = ta.ema(df['close'], length=12)
         df['ema_26'] = ta.ema(df['close'], length=26)
+
+        # RSI - THE overbought/oversold indicator
         df['rsi'] = ta.rsi(df['close'], length=14)
 
-        # Add MACD
+        # MACD - Momentum + Crossovers
         macd = ta.macd(df['close'])
         df = pd.concat([df, macd], axis=1)
 
-        # Add Bollinger Bands
-        bbands = ta.bbands(df['close'])
-        df = pd.concat([df, bbands], axis=1)
-
-        # Add ATR (Average True Range) - for volatility and stop placement
+        # ATR - Volatility for stops/position sizing
         df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)
 
-        # Add Stochastic Oscillator - overbought/oversold confirmation
-        stoch = ta.stoch(df['high'], df['low'], df['close'])
-        df = pd.concat([df, stoch], axis=1)
+        # ATR as percentage of price (for volatility regime detection)
+        df['atr_pct'] = (df['atr'] / df['close']) * 100
 
-        # Add ADX (Average Directional Index) - trend strength
+        # ADX - Trend Strength (>25 = strong trend)
         adx = ta.adx(df['high'], df['low'], df['close'], length=14)
         df = pd.concat([df, adx], axis=1)
 
-        # Add OBV (On-Balance Volume) - volume confirmation
+        # OBV - Volume Trend Confirmation
         df['obv'] = ta.obv(df['close'], df['volume'])
+        df['obv_sma'] = ta.sma(df['obv'], length=20)  # OBV trend line
 
-        # Add VWAP (Volume Weighted Average Price) - institutional levels
+        # Volume Ratio - Volume vs 20-period average (>1.5 = spike)
+        df['volume_sma'] = ta.sma(df['volume'], length=20)
+        df['volume_ratio'] = df['volume'] / df['volume_sma']
+        df['volume_ratio'] = df['volume_ratio'].fillna(1.0)
+
+        # Price Change Percentage (for quick momentum reference)
+        df['price_change_1'] = df['close'].pct_change(periods=1) * 100   # 1-bar change
+        df['price_change_4'] = df['close'].pct_change(periods=4) * 100   # 4-bar change
+        df['price_change_24'] = df['close'].pct_change(periods=24) * 100 # 24-bar change (1 day on 1H)
+
+        # ============================================================
+        # TIER 2: Useful Indicators
+        # ============================================================
+
+        # Bollinger Bands - Squeeze/Volatility Detection
+        bbands = ta.bbands(df['close'])
+        df = pd.concat([df, bbands], axis=1)
+
+        # Bollinger Band Width (for squeeze detection)
+        bb_upper_col = [c for c in df.columns if 'BBU' in c]
+        bb_lower_col = [c for c in df.columns if 'BBL' in c]
+        bb_mid_col = [c for c in df.columns if 'BBM' in c]
+        if bb_upper_col and bb_lower_col and bb_mid_col:
+            df['bb_width'] = (df[bb_upper_col[0]] - df[bb_lower_col[0]]) / df[bb_mid_col[0]] * 100
+
+        # VWAP - Institutional Reference Level
         df['vwap'] = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
 
-        # Add Williams %R - momentum
-        df['willr'] = ta.willr(df['high'], df['low'], df['close'], length=14)
-
-        # Add CCI (Commodity Channel Index) - trend/reversals
-        df['cci'] = ta.cci(df['high'], df['low'], df['close'], length=20)
-
-        # Add Fibonacci Retracement Levels (based on recent 50-bar swing)
-        lookback = min(50, len(df))
+        # Fibonacci Retracement Levels (200-bar lookback for significant levels)
+        lookback = min(200, len(df))  # Increased from 50 to 200 for better levels
         recent_high = df['high'].tail(lookback).max()
         recent_low = df['low'].tail(lookback).min()
         fib_range = recent_high - recent_low
@@ -777,7 +885,190 @@ def add_technical_indicators(df):
         df['fib_618'] = recent_high - (fib_range * 0.618)  # 61.8% retracement (golden ratio)
         df['fib_786'] = recent_high - (fib_range * 0.786)  # 78.6% retracement
 
-        print("✅ Technical indicators added successfully (14 indicators including Fibonacci)")
+        # ============================================================
+        # HIGH-VALUE SIGNALS: Divergence, S/R, Market Regime
+        # ============================================================
+
+        # --- RSI DIVERGENCE DETECTION ---
+        # Bullish divergence: Price makes lower low, RSI makes higher low
+        # Bearish divergence: Price makes higher high, RSI makes lower high
+        lookback_div = 14  # Lookback period for divergence detection
+        df['rsi_divergence'] = 'NONE'
+        df['rsi_divergence_strength'] = 0
+
+        if len(df) >= lookback_div + 5:
+            for i in range(lookback_div + 5, len(df)):
+                # Get recent window
+                price_window = df['close'].iloc[i-lookback_div:i+1]
+                rsi_window = df['rsi'].iloc[i-lookback_div:i+1]
+
+                if rsi_window.isna().any():
+                    continue
+
+                # Find local minima/maxima in price
+                price_min_idx = price_window.idxmin()
+                price_max_idx = price_window.idxmax()
+                current_price = price_window.iloc[-1]
+                current_rsi = rsi_window.iloc[-1]
+
+                # Check for bullish divergence (price lower low, RSI higher low)
+                recent_lows = price_window.nsmallest(3)
+                if len(recent_lows) >= 2:
+                    if current_price <= recent_lows.iloc[0] * 1.01:  # Near recent low
+                        # Check if RSI is making higher low
+                        price_at_prev_low = recent_lows.iloc[1]
+                        prev_low_idx = price_window[price_window == price_at_prev_low].index[0]
+                        if prev_low_idx in rsi_window.index:
+                            rsi_at_prev_low = df.loc[prev_low_idx, 'rsi']
+                            if not pd.isna(rsi_at_prev_low) and current_rsi > rsi_at_prev_low + 3:
+                                df.loc[df.index[i], 'rsi_divergence'] = 'BULLISH'
+                                df.loc[df.index[i], 'rsi_divergence_strength'] = current_rsi - rsi_at_prev_low
+
+                # Check for bearish divergence (price higher high, RSI lower high)
+                recent_highs = price_window.nlargest(3)
+                if len(recent_highs) >= 2:
+                    if current_price >= recent_highs.iloc[0] * 0.99:  # Near recent high
+                        # Check if RSI is making lower high
+                        price_at_prev_high = recent_highs.iloc[1]
+                        prev_high_idx = price_window[price_window == price_at_prev_high].index[0]
+                        if prev_high_idx in rsi_window.index:
+                            rsi_at_prev_high = df.loc[prev_high_idx, 'rsi']
+                            if not pd.isna(rsi_at_prev_high) and current_rsi < rsi_at_prev_high - 3:
+                                df.loc[df.index[i], 'rsi_divergence'] = 'BEARISH'
+                                df.loc[df.index[i], 'rsi_divergence_strength'] = rsi_at_prev_high - current_rsi
+
+        # --- OBV DIVERGENCE DETECTION ---
+        # Bullish: Price down/flat, OBV up (accumulation)
+        # Bearish: Price up/flat, OBV down (distribution)
+        df['obv_divergence'] = 'NONE'
+
+        if len(df) >= 20:
+            for i in range(20, len(df)):
+                price_change_10 = (df['close'].iloc[i] - df['close'].iloc[i-10]) / df['close'].iloc[i-10] * 100
+                obv_change_10 = df['obv'].iloc[i] - df['obv'].iloc[i-10]
+                obv_sma_current = df['obv_sma'].iloc[i] if not pd.isna(df['obv_sma'].iloc[i]) else 0
+                obv_sma_prev = df['obv_sma'].iloc[i-10] if not pd.isna(df['obv_sma'].iloc[i-10]) else 0
+                obv_trend = obv_sma_current - obv_sma_prev
+
+                # Bullish divergence: Price down but OBV up (smart money accumulating)
+                if price_change_10 < -2 and obv_trend > 0:
+                    df.loc[df.index[i], 'obv_divergence'] = 'BULLISH'
+                # Bearish divergence: Price up but OBV down (smart money distributing)
+                elif price_change_10 > 2 and obv_trend < 0:
+                    df.loc[df.index[i], 'obv_divergence'] = 'BEARISH'
+
+        # --- SWING HIGH/LOW SUPPORT & RESISTANCE ---
+        # Find significant swing points as actual S/R levels
+        swing_lookback = 5  # Bars on each side to confirm swing
+
+        df['swing_high'] = None
+        df['swing_low'] = None
+        df['nearest_resistance'] = None
+        df['nearest_support'] = None
+        df['distance_to_resistance_pct'] = None
+        df['distance_to_support_pct'] = None
+
+        swing_highs = []
+        swing_lows = []
+
+        if len(df) >= swing_lookback * 2 + 1:
+            for i in range(swing_lookback, len(df) - swing_lookback):
+                # Check for swing high
+                is_swing_high = True
+                for j in range(1, swing_lookback + 1):
+                    if df['high'].iloc[i] <= df['high'].iloc[i-j] or df['high'].iloc[i] <= df['high'].iloc[i+j]:
+                        is_swing_high = False
+                        break
+                if is_swing_high:
+                    swing_highs.append((i, df['high'].iloc[i]))
+                    df.loc[df.index[i], 'swing_high'] = df['high'].iloc[i]
+
+                # Check for swing low
+                is_swing_low = True
+                for j in range(1, swing_lookback + 1):
+                    if df['low'].iloc[i] >= df['low'].iloc[i-j] or df['low'].iloc[i] >= df['low'].iloc[i+j]:
+                        is_swing_low = False
+                        break
+                if is_swing_low:
+                    swing_lows.append((i, df['low'].iloc[i]))
+                    df.loc[df.index[i], 'swing_low'] = df['low'].iloc[i]
+
+            # Calculate nearest S/R for the last bar
+            if swing_highs and swing_lows:
+                current_price = df['close'].iloc[-1]
+
+                # Get recent swing highs above current price (resistance)
+                resistances = [h[1] for h in swing_highs if h[1] > current_price]
+                if resistances:
+                    nearest_resistance = min(resistances)
+                    df.loc[df.index[-1], 'nearest_resistance'] = nearest_resistance
+                    df.loc[df.index[-1], 'distance_to_resistance_pct'] = ((nearest_resistance - current_price) / current_price) * 100
+
+                # Get recent swing lows below current price (support)
+                supports = [l[1] for l in swing_lows if l[1] < current_price]
+                if supports:
+                    nearest_support = max(supports)
+                    df.loc[df.index[-1], 'nearest_support'] = nearest_support
+                    df.loc[df.index[-1], 'distance_to_support_pct'] = ((current_price - nearest_support) / current_price) * 100
+
+        # --- MARKET REGIME CLASSIFICATION ---
+        # TRENDING_UP: ADX > 25 AND price making higher highs/higher lows
+        # TRENDING_DOWN: ADX > 25 AND price making lower highs/lower lows
+        # RANGING: ADX < 20 OR price oscillating
+        # BREAKOUT: BB squeeze ending + volume spike
+        df['market_regime'] = 'UNKNOWN'
+        df['regime_strength'] = 0
+
+        if len(df) >= 20:
+            for i in range(20, len(df)):
+                adx_val = df['ADX_14'].iloc[i] if 'ADX_14' in df.columns and not pd.isna(df['ADX_14'].iloc[i]) else 0
+                bb_width_val = df['bb_width'].iloc[i] if 'bb_width' in df.columns and not pd.isna(df['bb_width'].iloc[i]) else 10
+                vol_ratio = df['volume_ratio'].iloc[i] if not pd.isna(df['volume_ratio'].iloc[i]) else 1
+
+                # Check price structure (higher highs/lows or lower highs/lows)
+                recent_highs = df['high'].iloc[i-10:i+1]
+                recent_lows = df['low'].iloc[i-10:i+1]
+
+                # Simple HH/HL or LH/LL detection
+                hh_count = sum(1 for j in range(1, len(recent_highs)) if recent_highs.iloc[j] > recent_highs.iloc[j-1])
+                ll_count = sum(1 for j in range(1, len(recent_lows)) if recent_lows.iloc[j] < recent_lows.iloc[j-1])
+
+                # Classify regime
+                if bb_width_val < 3 and vol_ratio > 1.5:  # Squeeze breakout
+                    df.loc[df.index[i], 'market_regime'] = 'BREAKOUT'
+                    df.loc[df.index[i], 'regime_strength'] = vol_ratio
+                elif adx_val > 25:
+                    if hh_count >= 6:  # More higher highs
+                        df.loc[df.index[i], 'market_regime'] = 'TRENDING_UP'
+                        df.loc[df.index[i], 'regime_strength'] = adx_val
+                    elif ll_count >= 6:  # More lower lows
+                        df.loc[df.index[i], 'market_regime'] = 'TRENDING_DOWN'
+                        df.loc[df.index[i], 'regime_strength'] = adx_val
+                    else:
+                        df.loc[df.index[i], 'market_regime'] = 'TRENDING'
+                        df.loc[df.index[i], 'regime_strength'] = adx_val
+                elif adx_val < 20:
+                    df.loc[df.index[i], 'market_regime'] = 'RANGING'
+                    df.loc[df.index[i], 'regime_strength'] = 20 - adx_val
+                else:
+                    df.loc[df.index[i], 'market_regime'] = 'TRANSITIONING'
+                    df.loc[df.index[i], 'regime_strength'] = adx_val
+
+        # ============================================================
+        # TIER 3: Legacy Indicators (calculated for compatibility, disabled in AI)
+        # ============================================================
+
+        # Stochastic Oscillator (redundant with RSI)
+        stoch = ta.stoch(df['high'], df['low'], df['close'])
+        df = pd.concat([df, stoch], axis=1)
+
+        # Williams %R (redundant with RSI)
+        df['willr'] = ta.willr(df['high'], df['low'], df['close'], length=14)
+
+        # CCI (noisy signals)
+        df['cci'] = ta.cci(df['high'], df['low'], df['close'], length=20)
+
+        print("✅ Technical indicators added (Optimized + High-Value Signals: Divergence, S/R, Regime)")
         return df
 
     except Exception as e:
@@ -838,6 +1129,176 @@ def get_data(symbol, timeframe='15m', bars=100, add_indicators=True):
         print("✨ Thanks for using Moon Dev's Data Fetcher! ✨")
 
     return df
+
+# ============================================================================
+# MULTI-TIMEFRAME ANALYSIS
+# ============================================================================
+
+def get_mtf_analysis(symbol, timeframes=['5m', '15m', '1h', '4h']):
+    """
+    🌙 Multi-Timeframe Analysis
+
+    Fetches data across multiple timeframes and calculates trend alignment.
+
+    Args:
+        symbol: Trading pair (e.g., 'BTC')
+        timeframes: List of timeframes to analyze
+
+    Returns:
+        dict with MTF analysis including alignment score and per-timeframe trends
+    """
+    print(f"\n📊 Multi-Timeframe Analysis for {symbol}")
+
+    mtf_data = {}
+
+    for tf in timeframes:
+        try:
+            # Fetch data with indicators (quietly)
+            df = get_data(symbol, timeframe=tf, bars=100, add_indicators=True)
+
+            if df.empty or len(df) < 20:
+                mtf_data[tf] = {'trend': 'UNKNOWN', 'strength': 0}
+                continue
+
+            latest = df.iloc[-1]
+
+            # Determine trend for this timeframe
+            trend = 'NEUTRAL'
+            strength = 0
+
+            # Price vs SMAs
+            price = latest['close']
+            sma_20 = latest.get('sma_20', price)
+            sma_50 = latest.get('sma_50', price)
+            sma_200 = latest.get('sma_200', price)
+
+            # Count bullish/bearish signals
+            bullish_signals = 0
+            bearish_signals = 0
+
+            # SMA alignment
+            if price > sma_20:
+                bullish_signals += 1
+            else:
+                bearish_signals += 1
+
+            if price > sma_50:
+                bullish_signals += 1
+            else:
+                bearish_signals += 1
+
+            if sma_20 > sma_50:
+                bullish_signals += 1
+            else:
+                bearish_signals += 1
+
+            # RSI
+            rsi = latest.get('rsi', 50)
+            if rsi > 50:
+                bullish_signals += 1
+            elif rsi < 50:
+                bearish_signals += 1
+
+            # MACD
+            macd = latest.get('macd', 0)
+            macd_signal = latest.get('macd_signal', 0)
+            if macd > macd_signal:
+                bullish_signals += 1
+            else:
+                bearish_signals += 1
+
+            # ADX for trend strength
+            adx = latest.get('adx', 20)
+
+            # Determine trend
+            total_signals = bullish_signals + bearish_signals
+            if total_signals > 0:
+                bull_pct = bullish_signals / total_signals
+                if bull_pct >= 0.7:
+                    trend = 'BULLISH'
+                    strength = int(bull_pct * 100)
+                elif bull_pct <= 0.3:
+                    trend = 'BEARISH'
+                    strength = int((1 - bull_pct) * 100)
+                else:
+                    trend = 'NEUTRAL'
+                    strength = 50
+
+            # Boost strength if ADX shows strong trend
+            if adx > 25:
+                strength = min(100, strength + 10)
+
+            mtf_data[tf] = {
+                'trend': trend,
+                'strength': strength,
+                'price': price,
+                'sma_20': sma_20,
+                'sma_50': sma_50,
+                'rsi': rsi,
+                'adx': adx
+            }
+
+        except Exception as e:
+            print(f"  ⚠️ Error fetching {tf}: {e}")
+            mtf_data[tf] = {'trend': 'UNKNOWN', 'strength': 0}
+
+    # Calculate overall alignment
+    trends = [mtf_data[tf]['trend'] for tf in timeframes if mtf_data[tf]['trend'] != 'UNKNOWN']
+
+    bullish_count = sum(1 for t in trends if t == 'BULLISH')
+    bearish_count = sum(1 for t in trends if t == 'BEARISH')
+    total_count = len(trends)
+
+    if total_count == 0:
+        alignment = 'UNKNOWN'
+        alignment_score = 0
+        alignment_pct = 0
+    elif bullish_count == total_count:
+        alignment = 'STRONG_BULLISH'
+        alignment_score = 100
+        alignment_pct = 100
+    elif bearish_count == total_count:
+        alignment = 'STRONG_BEARISH'
+        alignment_score = -100
+        alignment_pct = 100
+    elif bullish_count > bearish_count:
+        alignment = 'BULLISH'
+        alignment_score = int((bullish_count / total_count) * 100)
+        alignment_pct = int((bullish_count / total_count) * 100)
+    elif bearish_count > bullish_count:
+        alignment = 'BEARISH'
+        alignment_score = -int((bearish_count / total_count) * 100)
+        alignment_pct = int((bearish_count / total_count) * 100)
+    else:
+        alignment = 'MIXED'
+        alignment_score = 0
+        alignment_pct = 50
+
+    result = {
+        'symbol': symbol,
+        'timeframes': mtf_data,
+        'alignment': alignment,
+        'alignment_score': alignment_score,
+        'alignment_pct': alignment_pct,
+        'bullish_tfs': bullish_count,
+        'bearish_tfs': bearish_count,
+        'total_tfs': total_count
+    }
+
+    # Print summary
+    print(f"\n  📈 MTF Summary for {symbol}:")
+    for tf in timeframes:
+        data = mtf_data.get(tf, {})
+        trend = data.get('trend', 'UNKNOWN')
+        strength = data.get('strength', 0)
+        emoji = '🟢' if trend == 'BULLISH' else '🔴' if trend == 'BEARISH' else '⚪'
+        print(f"    {tf:>4}: {emoji} {trend:<10} (strength: {strength}%)")
+
+    align_emoji = '🟢🟢' if 'STRONG_BULLISH' in alignment else '🔴🔴' if 'STRONG_BEARISH' in alignment else '🟢' if 'BULLISH' in alignment else '🔴' if 'BEARISH' in alignment else '⚪'
+    print(f"\n  🎯 Overall: {align_emoji} {alignment} ({alignment_pct}% aligned)")
+
+    return result
+
 
 # ============================================================================
 # MARKET INFO FUNCTIONS
@@ -1082,8 +1543,8 @@ def open_short(token, amount, slippage=None, leverage=DEFAULT_LEVERAGE, account=
         print(colored(f'📉 Opening SHORT: {pos_size} {token} @ ${sell_price}', 'red'))
         print(colored(f'💰 Notional Position: ${amount:.2f} | Margin Required: ${required_margin:.2f} ({leverage}x)', 'cyan'))
 
-        # Place market sell to open short
-        exchange = Exchange(account, constants.MAINNET_API_URL)
+        # Place market sell to open short - use cached exchange for speed
+        exchange = get_cached_exchange(account)
         order_result = exchange.order(token, False, pos_size, sell_price, {"limit": {"tif": "Ioc"}}, reduce_only=False)
 
         print(colored(f'✅ Short position opened!', 'green'))
@@ -1094,7 +1555,7 @@ def open_short(token, amount, slippage=None, leverage=DEFAULT_LEVERAGE, account=
             if statuses and 'filled' in statuses[0]:
                 print(colored(f'🎯 Auto-setting TP/SL (TP: +{tp_pct}%, SL: -{sl_pct}%)', 'cyan'))
                 try:
-                    time.sleep(0.5)  # Brief pause to ensure position is registered
+                    time.sleep(0.1)  # Minimal pause (reduced from 0.5s)
                     # Get FULL position (not just this fill) for correct TP/SL sizing
                     positions, im_in_pos, total_size, pos_sym, avg_entry, pnl_pct, is_long = get_position(token, account)
                     if im_in_pos:

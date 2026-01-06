@@ -1,557 +1,1608 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CryptoVerge Terminal</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-    <link rel="stylesheet" href="/static/dashboard.css">
+    <style>
+        :root {
+            --bg-primary: #0a0b0d;
+            --bg-secondary: #111214;
+            --bg-card: #161719;
+            --bg-card-hover: #1a1c1f;
+            --border: #2a2d31;
+            --border-light: #363a3f;
+            --text-primary: #f4f4f5;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --accent-gold: #f59e0b;
+            --accent-gold-dim: #b45309;
+            --profit: #22c55e;
+            --profit-bg: rgba(34, 197, 94, 0.1);
+            --loss: #ef4444;
+            --loss-bg: rgba(239, 68, 68, 0.1);
+            --warning: #eab308;
+            --info: #3b82f6;
+            --font-mono: 'IBM Plex Mono', monospace;
+            --font-sans: 'Space Grotesk', sans-serif;
+        }
+
+        [data-theme="light"] {
+            --bg-primary: #f8fafc;
+            --bg-secondary: #f1f5f9;
+            --bg-card: #ffffff;
+            --bg-card-hover: #f8fafc;
+            --border: #e2e8f0;
+            --border-light: #cbd5e1;
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --text-muted: #94a3b8;
+            --profit-bg: rgba(34, 197, 94, 0.15);
+            --loss-bg: rgba(239, 68, 68, 0.15);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* === LAYOUT === */
+        .dashboard {
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            min-height: 100vh;
+            max-width: 1920px;
+            margin: 0 auto;
+        }
+
+        /* === HEADER === */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 24px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            gap: 24px;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-mark {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--accent-gold) 0%, var(--accent-gold-dim) 100%);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-mono);
+            font-weight: 600;
+            font-size: 14px;
+            color: var(--bg-primary);
+        }
+
+        .logo-text {
+            font-weight: 600;
+            font-size: 18px;
+            letter-spacing: -0.5px;
+        }
+
+        .logo-text span {
+            color: var(--text-muted);
+            font-weight: 400;
+            font-size: 12px;
+            display: block;
+            margin-top: -2px;
+        }
+
+        .header-center {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-muted);
+        }
+
+        .status-dot.running {
+            background: var(--profit);
+            box-shadow: 0 0 8px var(--profit);
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.stopped { background: var(--loss); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            font-family: var(--font-sans);
+            font-size: 12px;
+            font-weight: 500;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .btn:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--border-light);
+        }
+
+        .btn-primary {
+            background: var(--accent-gold);
+            border-color: var(--accent-gold);
+            color: var(--bg-primary);
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-gold-dim);
+            border-color: var(--accent-gold-dim);
+        }
+
+        .btn-success {
+            border-color: var(--profit);
+            color: var(--profit);
+        }
+
+        .btn-success:hover {
+            background: var(--profit-bg);
+        }
+
+        .btn-danger {
+            border-color: var(--loss);
+            color: var(--loss);
+        }
+
+        .btn-danger:hover {
+            background: var(--loss-bg);
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .fear-greed {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 11px;
+        }
+
+        .fear-greed-value {
+            font-family: var(--font-mono);
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .theme-toggle {
+            width: 36px;
+            height: 36px;
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            transition: all 0.15s ease;
+        }
+
+        .theme-toggle:hover {
+            border-color: var(--accent-gold);
+        }
+
+        .clock {
+            font-family: var(--font-mono);
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        /* === MAIN CONTENT === */
+        .main {
+            display: grid;
+            grid-template-columns: 320px 1fr 340px;
+            gap: 1px;
+            background: var(--border);
+            overflow: hidden;
+        }
+
+        .column {
+            background: var(--bg-primary);
+            overflow-y: auto;
+            max-height: calc(100vh - 120px);
+        }
+
+        .column::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .column::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .column::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+
+        /* === PANELS === */
+        .panel {
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .panel-title {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+        }
+
+        .panel-badge {
+            font-size: 10px;
+            padding: 2px 8px;
+            background: var(--profit-bg);
+            color: var(--profit);
+            border-radius: 4px;
+            font-weight: 500;
+        }
+
+        .panel-body {
+            padding: 16px;
+        }
+
+        /* === HERO P/L SECTION === */
+        .pnl-hero {
+            background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-secondary) 100%);
+            padding: 20px 16px;
+            text-align: center;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .pnl-hero-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .pnl-hero-value {
+            font-family: var(--font-mono);
+            font-size: 32px;
+            font-weight: 600;
+            letter-spacing: -1px;
+        }
+
+        .pnl-hero-value.positive { color: var(--profit); }
+        .pnl-hero-value.negative { color: var(--loss); }
+
+        .pnl-hero-sub {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        /* === ACCOUNT STATS === */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1px;
+            background: var(--border);
+        }
+
+        .stat-box {
+            background: var(--bg-card);
+            padding: 14px 16px;
+        }
+
+        .stat-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+
+        .stat-value {
+            font-family: var(--font-mono);
+            font-size: 16px;
+            font-weight: 500;
+        }
+
+        .stat-value.positive { color: var(--profit); }
+        .stat-value.negative { color: var(--loss); }
+
+        /* === PNL CARDS === */
+        .pnl-row {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1px;
+            background: var(--border);
+        }
+
+        .pnl-card {
+            background: var(--bg-card);
+            padding: 12px 16px;
+            text-align: center;
+        }
+
+        .pnl-card-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .pnl-card-value {
+            font-family: var(--font-mono);
+            font-size: 13px;
+            font-weight: 500;
+            margin-top: 4px;
+        }
+
+        /* === POSITIONS === */
+        .positions-section {
+            flex: 1;
+        }
+
+        .positions-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .positions-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .position-card {
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            padding: 14px 16px;
+            transition: background 0.15s ease;
+        }
+
+        .position-card:hover {
+            background: var(--bg-card-hover);
+        }
+
+        .position-card.long {
+            border-left: 3px solid var(--profit);
+        }
+
+        .position-card.short {
+            border-left: 3px solid var(--loss);
+        }
+
+        .position-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .position-symbol {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .position-icon {
+            width: 32px;
+            height: 32px;
+            background: var(--bg-secondary);
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+
+        .position-name {
+            font-weight: 600;
+            font-size: 18px;
+        }
+
+        .position-side {
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+
+        .position-side.long {
+            background: var(--profit-bg);
+            color: var(--profit);
+        }
+
+        .position-side.short {
+            background: var(--loss-bg);
+            color: var(--loss);
+        }
+
+        .position-pnl {
+            text-align: right;
+        }
+
+        .position-pnl-value {
+            font-family: var(--font-mono);
+            font-size: 22px;
+            font-weight: 600;
+        }
+
+        .position-pnl-value.positive { color: var(--profit); }
+        .position-pnl-value.negative { color: var(--loss); }
+
+        .position-pnl-usd {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .position-details {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+
+        .position-detail {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            background: var(--bg-secondary);
+            padding: 6px 10px;
+            border-radius: 4px;
+        }
+
+        .position-detail-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .position-detail-value {
+            font-family: var(--font-mono);
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .position-detail-value.tp { color: var(--profit); }
+        .position-detail-value.sl { color: var(--loss); }
+
+        .position-detail.rr-good { background: var(--profit-bg); }
+        .position-detail.rr-good .position-detail-value { color: var(--profit); }
+        .position-detail.rr-ok { background: rgba(234, 179, 8, 0.15); }
+        .position-detail.rr-ok .position-detail-value { color: var(--warning); }
+        .position-detail.rr-bad { background: var(--loss-bg); }
+        .position-detail.rr-bad .position-detail-value { color: var(--loss); }
+
+        .position-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-top: 4px;
+        }
+
+        .position-actions .btn {
+            padding: 6px 14px;
+            font-size: 12px;
+        }
+
+        .no-positions {
+            padding: 24px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+
+        /* === CHARTS === */
+        .chart-section {
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .chart-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .chart-tabs {
+            display: flex;
+            gap: 4px;
+        }
+
+        .chart-tab {
+            padding: 4px 10px;
+            font-size: 11px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.15s ease;
+        }
+
+        .chart-tab:hover {
+            color: var(--text-secondary);
+        }
+
+        .chart-tab.active {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        .chart-container {
+            height: 200px;
+            padding: 16px;
+        }
+
+        .tradingview-container {
+            height: 350px;
+            background: var(--bg-secondary);
+        }
+
+        /* === LOGS === */
+        .logs-section {
+            background: var(--bg-card);
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .logs-content {
+            flex: 1;
+            padding: 12px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            line-height: 1.6;
+            color: var(--text-secondary);
+            overflow-y: auto;
+            max-height: 200px;
+            background: var(--bg-primary);
+        }
+
+        .logs-content pre {
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* === WATCHLIST === */
+        .watchlist-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+
+        .watchlist-item:hover {
+            background: var(--bg-card-hover);
+        }
+
+        .watchlist-item.disabled {
+            opacity: 0.5;
+        }
+
+        .watchlist-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .watchlist-icon {
+            width: 28px;
+            height: 28px;
+            background: var(--bg-secondary);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-mono);
+            font-size: 9px;
+            font-weight: 600;
+        }
+
+        .watchlist-name {
+            font-weight: 500;
+            font-size: 13px;
+        }
+
+        .watchlist-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .watchlist-confidence {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .watchlist-signal {
+            font-size: 10px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+
+        .watchlist-signal.buy {
+            background: var(--profit-bg);
+            color: var(--profit);
+        }
+
+        .watchlist-signal.sell {
+            background: var(--loss-bg);
+            color: var(--loss);
+        }
+
+        .watchlist-signal.pending, .watchlist-signal.nothing {
+            background: var(--bg-secondary);
+            color: var(--text-muted);
+        }
+
+        .watchlist-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .watchlist-meta {
+            font-size: 10px;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+        }
+
+        .watchlist-pnl {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 600;
+            min-width: 50px;
+            text-align: right;
+        }
+
+        .watchlist-pnl.profit {
+            color: var(--profit);
+        }
+
+        .watchlist-pnl.loss {
+            color: var(--loss);
+        }
+
+        .watchlist-item.no-position {
+            opacity: 0.7;
+        }
+
+        .watchlist-item.no-position .watchlist-icon {
+            background: var(--bg-secondary);
+            border: 1px dashed var(--border);
+        }
+
+        .trading-mode {
+            font-size: 10px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .trading-mode.aggressive {
+            background: var(--profit-bg);
+            color: var(--profit);
+        }
+
+        .trading-mode.normal {
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+        }
+
+        .trading-mode.conservative {
+            background: rgba(255, 193, 7, 0.15);
+            color: #ffc107;
+        }
+
+        .trading-mode.protective {
+            background: var(--loss-bg);
+            color: var(--loss);
+        }
+
+        .goal-progress {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .goal-bar-container {
+            height: 6px;
+            background: var(--bg-secondary);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+
+        .goal-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--profit), #4ade80);
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+
+        .goal-bar.exceeded {
+            background: linear-gradient(90deg, #4ade80, #22d3ee);
+        }
+
+        .goal-bar.negative {
+            background: var(--loss);
+        }
+
+        .goal-stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            font-family: var(--font-mono);
+        }
+
+        .goal-stats #goal-current {
+            font-weight: 600;
+        }
+
+        .goal-stats #goal-current.profit {
+            color: var(--profit);
+        }
+
+        .goal-stats #goal-current.loss {
+            color: var(--loss);
+        }
+
+        /* === SETTINGS === */
+        .settings-group {
+            padding: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .settings-group-title {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+        }
+
+        .settings-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+
+        .setting-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .setting-item.full {
+            grid-column: span 2;
+        }
+
+        .setting-label {
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
+        .setting-input {
+            padding: 8px 10px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: 12px;
+        }
+
+        .setting-input:focus {
+            outline: none;
+            border-color: var(--accent-gold);
+        }
+
+        select.setting-input {
+            cursor: pointer;
+        }
+
+        /* === CIRCUIT BREAKER === */
+        .circuit-breaker {
+            background: var(--loss-bg);
+            border: 1px solid var(--loss);
+            border-radius: 6px;
+            padding: 12px;
+            margin: 16px;
+            text-align: center;
+        }
+
+        .circuit-breaker-title {
+            color: var(--loss);
+            font-weight: 600;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+
+        .circuit-breaker-msg {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        /* === FOOTER === */
+        .footer {
+            display: flex;
+            align-items: center;
+            padding: 8px 24px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+            gap: 24px;
+            overflow-x: auto;
+        }
+
+        .ticker-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .ticker-symbol {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+
+        .ticker-price {
+            font-family: var(--font-mono);
+            font-size: 12px;
+        }
+
+        .ticker-change {
+            font-family: var(--font-mono);
+            font-size: 11px;
+        }
+
+        .ticker-change.positive { color: var(--profit); }
+        .ticker-change.negative { color: var(--loss); }
+
+        /* === MODAL === */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(4px);
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow: hidden;
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .modal-title {
+            font-weight: 600;
+            font-size: 16px;
+        }
+
+        .modal-close {
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 24px;
+            cursor: pointer;
+            border-radius: 6px;
+        }
+
+        .modal-close:hover {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            max-height: calc(80vh - 60px);
+            font-family: var(--font-mono);
+            font-size: 12px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+
+        /* === TOAST === */
+        .toast {
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 13px;
+            opacity: 0;
+            transition: all 0.3s ease;
+            z-index: 1001;
+        }
+
+        .toast.visible {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+
+        .toast.success { border-color: var(--profit); }
+        .toast.error { border-color: var(--loss); }
+
+        /* === INDICATORS PANEL === */
+        .indicators-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .indicator-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .indicator-item:hover {
+            background: var(--bg-card-hover);
+        }
+
+        .indicator-item input {
+            width: 14px;
+            height: 14px;
+            cursor: pointer;
+        }
+
+        .indicator-impact {
+            font-size: 9px;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-weight: 600;
+        }
+
+        .indicator-impact.high {
+            background: var(--profit-bg);
+            color: var(--profit);
+        }
+
+        .indicator-impact.medium {
+            background: rgba(234, 179, 8, 0.15);
+            color: var(--warning);
+        }
+
+        .indicator-impact.low {
+            background: var(--bg-secondary);
+            color: var(--text-muted);
+        }
+
+        /* === COLLAPSIBLE === */
+        .collapsible-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            cursor: pointer;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-card);
+        }
+
+        .collapsible-header:hover {
+            background: var(--bg-card-hover);
+        }
+
+        .collapsible-icon {
+            font-size: 12px;
+            color: var(--text-muted);
+            transition: transform 0.2s ease;
+        }
+
+        .collapsible-content {
+            display: none;
+        }
+
+        .collapsible-content.open {
+            display: block;
+        }
+
+        .collapsible-header.open .collapsible-icon {
+            transform: rotate(180deg);
+        }
+
+        /* === ANALYSIS SECTION === */
+        .analysis-item {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-card);
+        }
+
+        .analysis-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .analysis-symbol {
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        .analysis-time {
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
+        .analysis-text {
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        /* === RESPONSIVE === */
+        @media (max-width: 1400px) {
+            .main {
+                grid-template-columns: 280px 1fr 300px;
+            }
+        }
+
+        @media (max-width: 1200px) {
+            .main {
+                grid-template-columns: 1fr 300px;
+            }
+            .column:first-child {
+                display: none;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .main {
+                grid-template-columns: 1fr;
+            }
+            .column:last-child {
+                display: none;
+            }
+        }
+    </style>
 </head>
 <body>
     <div class="dashboard">
-        <!-- Header -->
+        <!-- HEADER -->
         <header class="header">
             <div class="logo">
-                <div class="logo-icon">CV</div>
+                <div class="logo-mark">CV</div>
                 <div class="logo-text">
-                    <h1>CryptoVerge</h1>
+                    CryptoVerge
                     <span>HyperLiquid Terminal</span>
                 </div>
             </div>
 
             <div class="header-center">
-                <div class="status-badge">
+                <div class="status-pill">
                     <div class="status-dot stopped" id="status-dot"></div>
-                    <span class="status-label" id="status-text">Offline</span>
+                    <span id="status-text">Offline</span>
                 </div>
-                <div class="status-badge" id="scanner-badge" title="Log Scanner - Monitors for missing TP/SL and errors" style="cursor:help;flex-direction:column;align-items:center;">
-                    <div style="display:flex;align-items:center;gap:6px;">
-                        <div class="status-dot stopped" id="scanner-dot"></div>
-                        <span class="status-label" id="scanner-text">Scanner</span>
-                    </div>
-                    <span id="scanner-time" style="font-size:9px;color:var(--text-muted);">--:--</span>
+                <div class="status-pill" id="scanner-badge" title="Log Scanner Status">
+                    <div class="status-dot stopped" id="scanner-dot"></div>
+                    <span id="scanner-text">Scanner</span>
                 </div>
-                <div class="header-controls">
+                <div class="header-actions">
                     <button class="btn btn-success" onclick="sendCommand('start')">Start</button>
                     <button class="btn btn-danger" onclick="sendCommand('stop')">Stop</button>
                     <button class="btn" onclick="sendCommand('restart')">Restart</button>
                     <button class="btn btn-primary" onclick="sendCommand('run-analysis')">Analyze</button>
-                    <button class="btn" onclick="runBacktest()" style="border-color: var(--accent-purple); color: var(--accent-purple);">Backtest</button>
                 </div>
             </div>
 
-            <div style="display:flex;align-items:center;gap:16px;">
-                <div id="fear-greed" class="status-badge" style="cursor:help;" title="Crypto Fear & Greed Index">
-                    <span style="font-size:10px;color:var(--text-secondary);">F&G:</span>
-                    <span id="fg-value" style="font-weight:700;font-size:12px;">--</span>
-                    <span id="fg-label" style="font-size:9px;color:var(--text-muted);">Loading</span>
+            <div class="header-right">
+                <div class="fear-greed" id="fear-greed" title="Crypto Fear & Greed Index">
+                    <span style="color: var(--text-muted);">F&G</span>
+                    <span class="fear-greed-value" id="fg-value">--</span>
+                    <span id="fg-label" style="font-size: 10px; color: var(--text-muted);">Loading</span>
                 </div>
                 <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
-                    <span class="theme-toggle-icon active" id="dark-icon">&#9790;</span>
-                    <span class="theme-toggle-icon" id="light-icon">&#9728;</span>
+                    <span id="theme-icon">☾</span>
                 </button>
-                <div class="header-time" id="current-time">--:--:--</div>
+                <div class="clock" id="current-time">--:--:--</div>
             </div>
         </header>
 
-        <!-- Left Sidebar -->
-        <aside class="sidebar-left">
-            <!-- Account Panel -->
-            <div class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">Account</span>
-                    <span class="panel-badge">Live</span>
+        <!-- MAIN CONTENT -->
+        <main class="main">
+            <!-- LEFT COLUMN: Account & Watchlist -->
+            <div class="column">
+                <!-- Hero P/L -->
+                <div class="pnl-hero">
+                    <div class="pnl-hero-label">Account Value</div>
+                    <div class="pnl-hero-value positive" id="equity">$0.00</div>
+                    <div class="pnl-hero-sub" id="unrealized-pnl-sub">Unrealized: $0.00</div>
                 </div>
-                <div class="stat-grid">
-                    <div class="stat-item stat-large">
-                        <span class="stat-label">Equity</span>
-                        <span class="stat-value" id="equity">$0.00</span>
+
+                <!-- Stats Grid -->
+                <div class="stats-grid">
+                    <div class="stat-box">
+                        <div class="stat-label">Balance</div>
+                        <div class="stat-value" id="balance">$0.00</div>
                     </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Balance</span>
-                        <span class="stat-value" id="balance">$0.00</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Available</span>
-                        <span class="stat-value" id="available" style="color:#00ff88;">$0.00</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Unrealized P/L</span>
-                        <span class="stat-value" id="unrealized-pnl">$0.00</span>
+                    <div class="stat-box">
+                        <div class="stat-label">Available</div>
+                        <div class="stat-value positive" id="available">$0.00</div>
                     </div>
                 </div>
+
+                <!-- P/L Cards -->
                 <div class="pnl-row">
                     <div class="pnl-card">
-                        <div class="pnl-label" id="pnl-24h-label">24H P/L</div>
-                        <div class="pnl-value" id="pnl-24h">--</div>
+                        <div class="pnl-card-label" id="pnl-24h-label">24H P/L</div>
+                        <div class="pnl-card-value" id="pnl-24h">--</div>
                     </div>
                     <div class="pnl-card">
-                        <div class="pnl-label" id="pnl-7d-label">7D P/L</div>
-                        <div class="pnl-value" id="pnl-7d">--</div>
+                        <div class="pnl-card-label" id="pnl-7d-label">7D P/L</div>
+                        <div class="pnl-card-value" id="pnl-7d">--</div>
                     </div>
                 </div>
-                <!-- Daily Drawdown Circuit Breaker -->
-                <div class="pnl-row" style="margin-top:8px;border-top:1px solid var(--border-color);padding-top:8px;">
-                    <div class="pnl-card" style="flex:2;">
-                        <div class="pnl-label">Daily P/L</div>
-                        <div class="pnl-value" id="daily-pnl">--</div>
-                    </div>
-                    <div class="pnl-card" id="circuit-breaker-card" style="flex:1;cursor:pointer;" onclick="resetDrawdown()" title="Click to reset circuit breaker">
-                        <div class="pnl-label">Limit</div>
-                        <div class="pnl-value" id="daily-limit" style="font-size:11px;">$50</div>
-                    </div>
-                </div>
-                <div id="circuit-breaker-alert" style="display:none;margin-top:8px;padding:8px;background:#ff000033;border:1px solid #ff4444;border-radius:6px;text-align:center;">
-                    <div style="color:#ff4444;font-weight:bold;font-size:11px;">🛑 CIRCUIT BREAKER ACTIVE</div>
-                    <div style="color:#ff8888;font-size:10px;" id="circuit-breaker-msg">Trading halted</div>
-                    <button onclick="resetDrawdown()" style="margin-top:6px;padding:4px 12px;background:#ff4444;border:none;color:white;border-radius:4px;cursor:pointer;font-size:10px;">Reset</button>
-                </div>
-            </div>
 
-            <!-- Watchlist Panel -->
-            <div class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">Watchlist</span>
+                <!-- Daily Drawdown -->
+                <div class="pnl-row">
+                    <div class="pnl-card">
+                        <div class="pnl-card-label">Daily P/L</div>
+                        <div class="pnl-card-value" id="daily-pnl">--</div>
+                    </div>
+                    <div class="pnl-card" style="cursor: pointer;" onclick="resetDrawdown()" title="Click to reset">
+                        <div class="pnl-card-label">Limit</div>
+                        <div class="pnl-card-value" id="daily-limit">$50</div>
+                    </div>
                 </div>
-                <div class="token-list" id="token-list">
-                    <div class="token-item">
-                        <div class="token-info">
-                            <div class="token-icon">BTC</div>
-                            <span class="token-name">Bitcoin</span>
+
+                <div id="circuit-breaker-alert" class="circuit-breaker" style="display: none;">
+                    <div class="circuit-breaker-title">CIRCUIT BREAKER ACTIVE</div>
+                    <div class="circuit-breaker-msg" id="circuit-breaker-msg">Trading halted</div>
+                    <button class="btn btn-danger" style="margin-top: 8px;" onclick="resetDrawdown()">Reset</button>
+                </div>
+
+                <!-- Watchlist -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title">Watchlist</span>
+                        <span id="trading-mode" class="trading-mode">--</span>
+                    </div>
+                    <div id="goal-progress" class="goal-progress">
+                        <div class="goal-bar-container">
+                            <div id="goal-bar" class="goal-bar" style="width: 0%"></div>
                         </div>
-                        <span class="token-signal pending">Pending</span>
+                        <div class="goal-stats">
+                            <span id="goal-current">$0</span>
+                            <span id="goal-target">/ $200 daily</span>
+                        </div>
+                    </div>
+                    <div id="token-list">
+                        <div class="watchlist-item">
+                            <div class="watchlist-left">
+                                <div class="watchlist-icon">BTC</div>
+                                <span class="watchlist-name">Bitcoin</span>
+                            </div>
+                            <div class="watchlist-right">
+                                <span class="watchlist-signal pending">Loading</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Indicators (Collapsible) -->
+                <div class="collapsible-header" onclick="toggleCollapsible(this)">
+                    <span class="panel-title">AI Indicators</span>
+                    <span class="collapsible-icon">▼</span>
+                </div>
+                <div class="collapsible-content indicators-list" id="indicators-container">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <!-- CENTER COLUMN: Charts, Positions & Logs -->
+            <div class="column">
+                <!-- Equity Chart -->
+                <div class="chart-section">
+                    <div class="chart-header">
+                        <span class="panel-title">Equity Curve</span>
+                        <div class="chart-tabs">
+                            <button class="chart-tab" data-hours="1" onclick="setChartTimeframe(1)">1H</button>
+                            <button class="chart-tab" data-hours="24" onclick="setChartTimeframe(24)">1D</button>
+                            <button class="chart-tab active" data-hours="168" onclick="setChartTimeframe(168)">7D</button>
+                            <button class="chart-tab" data-hours="720" onclick="setChartTimeframe(720)">1M</button>
+                        </div>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="equity-chart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Live Chart -->
+                <div class="chart-section">
+                    <div class="chart-header">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <span class="panel-title">Live Chart</span>
+                            <select id="chart-symbol" class="setting-input" style="padding: 4px 8px;" onchange="updateTradingViewChart()">
+                                <option value="BINANCE:BTCUSDT">BTC</option>
+                                <option value="BINANCE:ETHUSDT">ETH</option>
+                                <option value="BINANCE:SOLUSDT">SOL</option>
+                                <option value="BINANCE:DOGEUSDT">DOGE</option>
+                                <option value="BINANCE:XRPUSDT">XRP</option>
+                                <option value="BINANCE:PEPEUSDT">PEPE</option>
+                            </select>
+                        </div>
+                        <div class="chart-tabs">
+                            <button class="chart-tab live-tf-btn" data-interval="5" onclick="setLiveChartTimeframe('5')">5m</button>
+                            <button class="chart-tab live-tf-btn" data-interval="15" onclick="setLiveChartTimeframe('15')">15m</button>
+                            <button class="chart-tab live-tf-btn active" data-interval="60" onclick="setLiveChartTimeframe('60')">1H</button>
+                            <button class="chart-tab live-tf-btn" data-interval="240" onclick="setLiveChartTimeframe('240')">4H</button>
+                            <button class="chart-tab live-tf-btn" data-interval="D" onclick="setLiveChartTimeframe('D')">1D</button>
+                        </div>
+                    </div>
+                    <div class="tradingview-container" id="tradingview-widget"></div>
+                </div>
+
+                <!-- Positions -->
+                <div class="positions-section">
+                    <div class="positions-header">
+                        <span class="panel-title">Open Positions</span>
+                        <div class="positions-actions">
+                            <button class="btn btn-success" onclick="forceBuy()">Buy</button>
+                            <button class="btn" onclick="setAllTpSl()">Set TP/SL</button>
+                            <button class="btn" onclick="cancelDuplicateOrders()">Cancel Dupes</button>
+                            <button class="btn btn-danger" onclick="cancelAllOrders()">Cancel All</button>
+                        </div>
+                    </div>
+                    <div id="positions-container">
+                        <div class="no-positions">No open positions</div>
+                    </div>
+                </div>
+
+                <!-- Logs -->
+                <div class="logs-section">
+                    <div class="panel-header">
+                        <span class="panel-title">System Logs</span>
+                        <div style="display: flex; gap: 6px;">
+                            <button class="btn" onclick="scrollLogsToBottom()">↓</button>
+                            <button class="btn" onclick="sendCommand('clear-logs')">Clear</button>
+                        </div>
+                    </div>
+                    <div class="logs-content">
+                        <pre id="log-content">Waiting for logs...</pre>
                     </div>
                 </div>
             </div>
-        </aside>
 
-        <!-- Main Content -->
-        <main class="main-content">
-            <!-- Equity Chart -->
-            <div class="chart-panel">
-                <div class="chart-header">
-                    <span class="panel-title">Equity Curve</span>
-                    <div class="chart-timeframes">
-                        <button class="timeframe-btn" data-hours="1" onclick="setChartTimeframe(1)">1H</button>
-                        <button class="timeframe-btn" data-hours="24" onclick="setChartTimeframe(24)">1D</button>
-                        <button class="timeframe-btn active" data-hours="168" onclick="setChartTimeframe(168)">7D</button>
-                        <button class="timeframe-btn" data-hours="720" onclick="setChartTimeframe(720)">1M</button>
-                        <button class="timeframe-btn" data-hours="8760" onclick="setChartTimeframe(8760)">1Y</button>
+            <!-- RIGHT COLUMN: Settings -->
+            <div class="column">
+                <!-- Manual Buy -->
+                <div class="settings-group">
+                    <div class="settings-group-title">Manual Trade</div>
+                    <div class="settings-grid">
+                        <div class="setting-item full">
+                            <label class="setting-label">Symbol</label>
+                            <select id="manual-symbol" class="setting-input">
+                                <option value="BTC">BTC</option>
+                                <option value="ETH">ETH</option>
+                                <option value="SOL">SOL</option>
+                                <option value="DOGE">DOGE</option>
+                                <option value="XRP">XRP</option>
+                                <option value="LINK">LINK</option>
+                                <option value="AVAX">AVAX</option>
+                                <option value="SUI">SUI</option>
+                                <option value="PEPE">PEPE</option>
+                                <option value="WIF">WIF</option>
+                            </select>
+                        </div>
+                        <div class="setting-item">
+                            <label class="setting-label">Size (USD)</label>
+                            <input type="number" class="setting-input" id="manual-size" value="50" min="10" step="10">
+                        </div>
+                        <div class="setting-item">
+                            <label class="setting-label">Leverage</label>
+                            <input type="number" class="setting-input" id="manual-leverage" value="5" min="1" max="50">
+                        </div>
                     </div>
-                </div>
-                <div class="chart-container">
-                    <canvas id="equity-chart"></canvas>
-                </div>
-            </div>
-
-            <!-- Live Chart -->
-            <div class="chart-panel">
-                <div class="chart-header">
-                    <div style="display:flex;align-items:center;gap:12px;">
-                        <span class="panel-title">Live Chart</span>
-                        <select id="chart-symbol" class="setting-input" style="padding:4px 8px;font-size:11px;" onchange="updateTradingViewChart()">
-                            <option value="BINANCE:BTCUSDT">BTC</option>
-                            <option value="BINANCE:ETHUSDT">ETH</option>
-                            <option value="BINANCE:SOLUSDT">SOL</option>
-                            <option value="BINANCE:DOGEUSDT">DOGE</option>
-                            <option value="BINANCE:XRPUSDT">XRP</option>
+                    <div style="display: flex; gap: 8px; margin-top: 12px;">
+                        <button class="btn btn-success" style="flex: 1; font-weight: 600;" onclick="manualBuy('long')">LONG</button>
+                        <button class="btn btn-danger" style="flex: 1; font-weight: 600;" onclick="manualBuy('short')">SHORT</button>
+                    </div>
+                    <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center;">
+                        <select id="manual-close-pct" class="setting-input" style="width: 80px;">
+                            <option value="25">25%</option>
+                            <option value="50" selected>50%</option>
+                            <option value="75">75%</option>
+                            <option value="100">100%</option>
                         </select>
-                    </div>
-                    <div class="chart-timeframes">
-                        <button class="live-tf-btn timeframe-btn" data-interval="1" onclick="setLiveChartTimeframe('1')">1m</button>
-                        <button class="live-tf-btn timeframe-btn" data-interval="5" onclick="setLiveChartTimeframe('5')">5m</button>
-                        <button class="live-tf-btn timeframe-btn" data-interval="15" onclick="setLiveChartTimeframe('15')">15m</button>
-                        <button class="live-tf-btn timeframe-btn active" data-interval="60" onclick="setLiveChartTimeframe('60')">1H</button>
-                        <button class="live-tf-btn timeframe-btn" data-interval="240" onclick="setLiveChartTimeframe('240')">4H</button>
-                        <button class="live-tf-btn timeframe-btn" data-interval="D" onclick="setLiveChartTimeframe('D')">1D</button>
+                        <button class="btn" style="flex: 1; font-weight: 600; background: #ff9800; color: #000;" onclick="manualClose()">CLOSE POSITION</button>
                     </div>
                 </div>
-                <div id="tradingview-widget" style="height:400px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border-color);overflow:hidden;">
-                </div>
-            </div>
 
-            <!-- Positions -->
-            <div class="positions-panel">
-                <div class="panel-header">
-                    <span class="panel-title">Open Positions</span>
-                    <div style="display:flex;gap:8px;">
-                        <button class="btn" style="background:#00aa55;" onclick="forceBuy()">Force Buy 25%</button>
-                        <button class="btn" onclick="setAllTpSl()">Set TP/SL</button>
-                        <button class="btn" style="background:#cc6600;" onclick="cancelDuplicateOrders()">Cancel Dupes</button>
-                        <button class="btn" style="background:#cc0000;" onclick="cancelAllOrders()">Cancel All</button>
+                <!-- Trading Settings (Collapsible) -->
+                <div class="collapsible-header" onclick="toggleCollapsible(this)">
+                    <span class="panel-title">Trading Settings</span>
+                    <span class="collapsible-icon">▼</span>
+                </div>
+                <div class="collapsible-content">
+                    <div class="settings-group" style="border-top: none;">
+                        <div class="settings-grid">
+                            <div class="setting-item">
+                                <label class="setting-label">Leverage</label>
+                                <input type="number" class="setting-input" id="setting-leverage" value="5">
+                            </div>
+                            <div class="setting-item">
+                                <label class="setting-label">Position %</label>
+                                <input type="number" class="setting-input" id="setting-max_position_pct" value="25">
+                            </div>
+                            <div class="setting-item">
+                                <label class="setting-label">Stop Loss %</label>
+                                <input type="number" class="setting-input" id="setting-stop_loss" value="3">
+                            </div>
+                            <div class="setting-item">
+                                <label class="setting-label">Take Profit %</label>
+                                <input type="number" class="setting-input" id="setting-take_profit" value="5">
+                            </div>
+                            <div class="setting-item">
+                                <label class="setting-label">Sleep (min)</label>
+                                <input type="number" class="setting-input" id="setting-sleep_minutes" value="30">
+                            </div>
+                            <div class="setting-item">
+                                <label class="setting-label">Min Confidence</label>
+                                <input type="number" class="setting-input" id="setting-min_confidence" value="70" min="0" max="100">
+                            </div>
+                        </div>
+                        <button class="btn btn-primary" style="width: 100%; margin-top: 12px;" onclick="saveSettings()">Save Settings</button>
                     </div>
                 </div>
-                <div class="positions-grid" id="positions-container">
-                    <div class="no-positions">No open positions</div>
-                </div>
-            </div>
 
-            <!-- Trade Analysis -->
-            <div class="panel" style="margin-top:12px;max-height:200px;overflow-y:auto;">
-                <div class="panel-header">
-                    <span class="panel-title">Trade Reasoning</span>
-                    <button class="btn" onclick="clearTradeAnalysis()">Clear</button>
+                <!-- ATR Settings -->
+                <div class="collapsible-header" onclick="toggleCollapsible(this)">
+                    <span class="panel-title">ATR-Based Stops</span>
+                    <span class="collapsible-icon">▼</span>
                 </div>
-                <div id="trade-analysis-container" style="padding:12px;font-size:12px;color:#a0a0a0;line-height:1.5;">
-                    <div class="no-analysis">No trades yet. Analysis will appear here when positions are opened.</div>
-                </div>
-            </div>
-
-            <!-- Logs -->
-            <div class="logs-panel">
-                <div class="logs-header">
-                    <span class="panel-title">System Logs</span>
-                    <div style="display:flex;gap:8px;">
-                        <button class="btn" onclick="scrollLogsToBottom()" title="Scroll to bottom">↓ Bottom</button>
-                        <button class="btn" onclick="sendCommand('clear-logs')">Clear</button>
+                <div class="collapsible-content">
+                    <div class="settings-group" style="border-top: none;">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                            <input type="checkbox" id="atr-stops-enabled" style="cursor: pointer;">
+                            <label for="atr-stops-enabled" style="color: var(--profit); font-size: 12px; cursor: pointer;">Enable ATR Stops</label>
+                        </div>
+                        <div class="settings-grid">
+                            <div class="setting-item">
+                                <label class="setting-label">ATR Period</label>
+                                <input type="number" class="setting-input" id="atr-period" value="14">
+                            </div>
+                            <div class="setting-item">
+                                <label class="setting-label">Min SL %</label>
+                                <input type="number" class="setting-input" id="atr-min-sl" value="1.0" step="0.5">
+                            </div>
+                            <div class="setting-item">
+                                <label class="setting-label">SL Multiplier</label>
+                                <input type="number" class="setting-input" id="atr-sl-mult" value="2.0" step="0.5">
+                            </div>
+                            <div class="setting-item">
+                                <label class="setting-label">TP Multiplier</label>
+                                <input type="number" class="setting-input" id="atr-tp-mult" value="3.0" step="0.5">
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <div class="logs-content">
-                    <pre id="log-content">Waiting for logs...</pre>
+
+                <!-- Scan Interval -->
+                <div class="collapsible-header" onclick="toggleCollapsible(this)">
+                    <span class="panel-title">Scan Interval</span>
+                    <span class="collapsible-icon">▼</span>
+                </div>
+                <div class="collapsible-content">
+                    <div class="settings-group" style="border-top: none;">
+                        <div style="padding: 10px; background: var(--bg-primary); border-radius: 6px; margin-bottom: 12px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                                <span style="font-size: 10px; color: var(--text-muted);">ACTIVE:</span>
+                                <span id="active-interval-badge" style="background: var(--profit); color: var(--bg-primary); padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600;">AUTO</span>
+                            </div>
+                            <div id="active-interval-name" style="font-weight: 600; font-size: 13px;">Standard</div>
+                            <div id="active-interval-details" style="font-size: 11px; color: var(--text-muted);">30min scans</div>
+                        </div>
+                        <div class="setting-item full">
+                            <label class="setting-label">Preset</label>
+                            <select id="scan-preset" class="setting-input">
+                                <option value="scalp">Scalp (5min)</option>
+                                <option value="active">Active (15min)</option>
+                                <option value="standard" selected>Standard (30min)</option>
+                                <option value="swing">Swing (60min)</option>
+                            </select>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">
+                            <input type="checkbox" id="auto-adjust" checked>
+                            <label for="auto-adjust" style="font-size: 11px; color: var(--text-secondary);">Auto-adjust based on volatility</label>
+                        </div>
+                        <button class="btn" style="width: 100%; margin-top: 12px;" onclick="saveScanSettings()">Save Scan Settings</button>
+                    </div>
+                </div>
+
+                <!-- Goals -->
+                <div class="collapsible-header" onclick="toggleCollapsible(this)">
+                    <span class="panel-title">Trading Goals</span>
+                    <span class="collapsible-icon">▼</span>
+                </div>
+                <div class="collapsible-content">
+                    <div class="settings-group" style="border-top: none;">
+                        <div class="settings-grid">
+                            <div class="setting-item">
+                                <label class="setting-label">Daily Target $</label>
+                                <input type="number" class="setting-input" id="goal-daily_profit" value="50">
+                            </div>
+                            <div class="setting-item">
+                                <label class="setting-label">Weekly Target $</label>
+                                <input type="number" class="setting-input" id="goal-weekly_profit" value="250">
+                            </div>
+                            <div class="setting-item">
+                                <label class="setting-label">Max Daily Loss $</label>
+                                <input type="number" class="setting-input" id="goal-max_loss" value="30">
+                            </div>
+                            <div class="setting-item">
+                                <label class="setting-label">Target Balance $</label>
+                                <input type="number" class="setting-input" id="goal-target_balance" value="1000">
+                            </div>
+                        </div>
+                        <button class="btn btn-primary" style="width: 100%; margin-top: 12px;" onclick="saveGoals()">Save Goals</button>
+                    </div>
+                </div>
+
+                <!-- Discord Alerts -->
+                <div class="collapsible-header" onclick="toggleCollapsible(this)">
+                    <span class="panel-title">Discord Alerts</span>
+                    <span class="collapsible-icon">▼</span>
+                </div>
+                <div class="collapsible-content">
+                    <div class="settings-group" style="border-top: none;">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                            <input type="checkbox" id="alerts-enabled" checked>
+                            <label for="alerts-enabled" style="font-size: 12px;">Enable Discord Alerts</label>
+                        </div>
+                        <div class="setting-item full">
+                            <label class="setting-label">Webhook URL</label>
+                            <input type="text" class="setting-input" id="discord-webhook" placeholder="https://discord.com/api/webhooks/...">
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; font-size: 11px;">
+                            <label><input type="checkbox" id="alert-position_opened" checked> Position Opened</label>
+                            <label><input type="checkbox" id="alert-position_closed" checked> Position Closed</label>
+                            <label><input type="checkbox" id="alert-stop_loss_hit" checked> Stop Loss Hit</label>
+                            <label><input type="checkbox" id="alert-take_profit_hit" checked> Take Profit Hit</label>
+                            <label><input type="checkbox" id="alert-drawdown_warning" checked> Drawdown Warning</label>
+                            <label><input type="checkbox" id="alert-circuit_breaker" checked> Circuit Breaker</label>
+                        </div>
+                        <div style="display: flex; gap: 8px; margin-top: 12px;">
+                            <button class="btn btn-primary" style="flex: 1;" onclick="saveAlerts()">Save Alerts</button>
+                            <button class="btn btn-success" onclick="testAlert()">Test</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI Recommendations -->
+                <div class="panel" style="flex: 1;">
+                    <div class="panel-header">
+                        <span class="panel-title">AI Recommendations</span>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn" onclick="loadRecommendations()">Refresh</button>
+                            <button class="btn btn-success" onclick="executeRecommendations()">Execute All</button>
+                        </div>
+                    </div>
+                    <div id="recommendations-container" style="max-height: 250px; overflow-y: auto;">
+                        <div class="no-positions" style="padding: 20px;">Click Refresh to analyze positions</div>
+                    </div>
+                    <div id="recommendations-status" style="padding: 8px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--border);"></div>
                 </div>
             </div>
         </main>
 
-        <!-- Right Sidebar -->
-        <aside class="sidebar-right">
-            <!-- Settings Panel -->
-            <div class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">Trading Settings</span>
-                </div>
-                <div class="settings-grid">
-                    <div class="setting-item">
-                        <label class="setting-label">Leverage</label>
-                        <input type="number" class="setting-input" id="setting-leverage" value="5">
-                    </div>
-                    <div class="setting-item">
-                        <label class="setting-label">Position %</label>
-                        <input type="number" class="setting-input" id="setting-max_position_pct" value="25">
-                    </div>
-                    <div class="setting-item">
-                        <label class="setting-label">Stop Loss %</label>
-                        <input type="number" class="setting-input" id="setting-stop_loss" value="3">
-                    </div>
-                    <div class="setting-item">
-                        <label class="setting-label">Take Profit %</label>
-                        <input type="number" class="setting-input" id="setting-take_profit" value="5">
-                    </div>
-                    <div class="setting-item">
-                        <label class="setting-label">Sleep (min)</label>
-                        <input type="number" class="setting-input" id="setting-sleep_minutes" value="30">
-                    </div>
-                    <div class="setting-item full-width" style="margin-top:12px;">
-                        <label class="setting-label">Min Confidence: <span id="confidence-value">70</span>%</label>
-                        <input type="range" min="0" max="100" value="70" class="setting-input" id="setting-min_confidence"
-                               style="width:100%;cursor:pointer;"
-                               oninput="document.getElementById('confidence-value').textContent=this.value">
-                    </div>
-                    <!-- Auto TP/SL Settings -->
-                    <div class="setting-item full-width" style="margin-top:16px;border-top:1px solid #1a1a2e;padding-top:12px;">
-                        <label class="setting-label" style="margin-bottom:8px;display:block;">Auto TP/SL from Analysis</label>
-                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-                            <input type="checkbox" id="auto-tpsl-enabled" style="cursor:pointer;">
-                            <label for="auto-tpsl-enabled" style="color:#888;font-size:12px;cursor:pointer;">Enable auto TP/SL after analysis</label>
-                        </div>
-                        <div style="display:flex;gap:10px;margin-bottom:10px;">
-                            <div style="flex:1;">
-                                <label style="color:#666;font-size:11px;display:block;margin-bottom:4px;">Max SL %</label>
-                                <input type="number" id="auto-tpsl-max-sl" value="7" min="1" max="20" step="0.5"
-                                       style="width:100%;padding:6px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;">
-                            </div>
-                            <div style="flex:1;">
-                                <label style="color:#666;font-size:11px;display:block;margin-bottom:4px;">TP/SL Mode</label>
-                                <select id="auto-tpsl-mode" style="width:100%;padding:6px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;">
-                                    <option value="conservative">Conservative</option>
-                                    <option value="moderate" selected>Moderate</option>
-                                    <option value="aggressive">Aggressive</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div style="padding:8px;background:#0d0d18;border-radius:4px;font-size:11px;color:#666;">
-                            When enabled, automatically sets TP/SL on positions after each analysis cycle using AI-recommended levels. Only applies to BUY signals.
-                        </div>
-                        <!-- ATR-Based Stops -->
-                        <div style="margin-top:12px;padding-top:12px;border-top:1px dashed #1a1a2e;">
-                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-                                <input type="checkbox" id="atr-stops-enabled" style="cursor:pointer;">
-                                <label for="atr-stops-enabled" style="color:#00d4aa;font-size:12px;cursor:pointer;font-weight:bold;">Use ATR-Based Stops</label>
-                            </div>
-                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
-                                <div>
-                                    <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">ATR Period</label>
-                                    <input type="number" id="atr-period" value="14" min="5" max="50" step="1"
-                                           style="width:100%;padding:5px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;font-size:11px;">
-                                </div>
-                                <div>
-                                    <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">Min SL %</label>
-                                    <input type="number" id="atr-min-sl" value="1.0" min="0.5" max="5" step="0.5"
-                                           style="width:100%;padding:5px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;font-size:11px;">
-                                </div>
-                                <div>
-                                    <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">SL Multiplier</label>
-                                    <input type="number" id="atr-sl-mult" value="2.0" min="0.5" max="5" step="0.5"
-                                           style="width:100%;padding:5px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;font-size:11px;">
-                                </div>
-                                <div>
-                                    <label style="color:#666;font-size:10px;display:block;margin-bottom:3px;">TP Multiplier</label>
-                                    <input type="number" id="atr-tp-mult" value="3.0" min="1" max="10" step="0.5"
-                                           style="width:100%;padding:5px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;font-size:11px;">
-                                </div>
-                            </div>
-                            <div style="padding:6px;background:#001a10;border:1px solid #00442220;border-radius:4px;font-size:10px;color:#00aa55;">
-                                ATR adjusts stops to market volatility. SL = Entry - (ATR x SL Mult). Higher volatility = wider stops.
-                            </div>
-                        </div>
-                    </div>
-                    <div class="setting-item full-width" style="margin-top:16px;border-top:1px solid #1a1a2e;padding-top:12px;">
-                        <label class="setting-label" style="margin-bottom:8px;display:block;">Scan Interval</label>
-                        <div id="active-interval-display" style="margin-bottom:10px;padding:10px;background:linear-gradient(135deg, #1a1a2e 0%, #0d0d18 100%);border:1px solid #00aa55;border-radius:6px;">
-                            <div style="display:flex;justify-content:space-between;align-items:center;">
-                                <span style="color:#888;font-size:11px;">CURRENTLY ACTIVE:</span>
-                                <span id="active-interval-badge" style="background:#00aa55;color:#000;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:bold;">Loading...</span>
-                            </div>
-                            <div style="margin-top:6px;font-size:13px;">
-                                <span id="active-interval-name" style="color:#fff;font-weight:bold;">--</span>
-                                <span id="active-interval-details" style="color:#888;margin-left:8px;">--</span>
-                            </div>
-                            <div id="volatility-display" style="margin-top:6px;font-size:11px;color:#666;">
-                                <span>Volatility: </span><span id="volatility-value">--</span>
-                            </div>
-                        </div>
-                        <label style="color:#666;font-size:11px;margin-bottom:4px;display:block;">Manual Preference (when auto-adjust is OFF):</label>
-                        <select id="scan-preset" class="setting-input" style="width:100%;padding:8px;background:#0a0a12;border:1px solid #1a1a2e;color:#fff;border-radius:4px;">
-                            <option value="scalp">Scalp (5min/15m) - High volatility</option>
-                            <option value="active">Active (15min/1H) - Moderate volatility</option>
-                            <option value="standard" selected>Standard (30min/1H) - Normal conditions</option>
-                            <option value="swing">Swing (60min/4H) - Lower volatility</option>
-                            <option value="patient">Patient (120min/4H) - Calm markets</option>
-                        </select>
-                        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;">
-                            <input type="checkbox" id="auto-adjust" checked style="cursor:pointer;">
-                            <label for="auto-adjust" style="color:#888;font-size:12px;cursor:pointer;">Auto-adjust based on volatility</label>
-                        </div>
-                        <div id="volatility-info" style="margin-top:8px;padding:8px;background:#0d0d18;border-radius:4px;font-size:11px;color:#666;">
-                            Auto-adjust uses ATR% to switch intervals:<br>
-                            • ATR > 3% → Active (faster scans)<br>
-                            • ATR 1.5-3% → Standard<br>
-                            • ATR < 1.5% → Swing (slower scans)
-                        </div>
-                    </div>
-                </div>
-                <button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="saveSettings()">Save Settings</button>
-                <button class="btn" style="width:100%;margin-top:8px;border-color:#00aa55;color:#00aa55;" onclick="saveScanSettings()">Save Scan Interval</button>
+        <!-- FOOTER: Price Ticker -->
+        <footer class="footer">
+            <div id="price-ticker-items" style="display: flex; gap: 32px;">
+                <div class="ticker-item"><span class="ticker-symbol">Loading prices...</span></div>
             </div>
-
-            <!-- Trading Goals Panel -->
-            <div class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">Trading Goals</span>
-                </div>
-                <div class="settings-grid">
-                    <div class="setting-item">
-                        <label class="setting-label">Daily Target $</label>
-                        <input type="number" class="setting-input" id="goal-daily_profit" value="50">
-                    </div>
-                    <div class="setting-item">
-                        <label class="setting-label">Weekly Target $</label>
-                        <input type="number" class="setting-input" id="goal-weekly_profit" value="250">
-                    </div>
-                    <div class="setting-item">
-                        <label class="setting-label">Max Daily Loss $</label>
-                        <input type="number" class="setting-input" id="goal-max_loss" value="30">
-                    </div>
-                    <div class="setting-item">
-                        <label class="setting-label">Target Balance $</label>
-                        <input type="number" class="setting-input" id="goal-target_balance" value="1000">
-                    </div>
-                    <div class="setting-item">
-                        <label class="setting-label">Risk/Trade %</label>
-                        <input type="number" class="setting-input" id="goal-risk_percent" value="5">
-                    </div>
-                    <div class="setting-item">
-                        <label class="setting-label">Strategy</label>
-                        <select class="setting-input" id="goal-strategy">
-                            <option value="conservative">Conservative</option>
-                            <option value="moderate">Moderate</option>
-                            <option value="aggressive">Aggressive</option>
-                        </select>
-                    </div>
-                    <div class="setting-item full-width">
-                        <label class="setting-label">Custom Goal</label>
-                        <input type="text" class="setting-input" id="goal-custom" placeholder="e.g., Focus on BTC only">
-                    </div>
-                </div>
-                <button class="btn btn-primary" style="width:100%;margin-top:12px;" onclick="saveGoals()">Save Goals</button>
-            </div>
-
-            <!-- Alerts Panel -->
-            <div class="panel">
-                <div class="panel-header">
-                    <span class="panel-title">🔔 Discord Alerts</span>
-                </div>
-                <div class="settings-grid">
-                    <div class="setting-item full-width" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-                        <input type="checkbox" id="alerts-enabled" checked style="cursor:pointer;">
-                        <label for="alerts-enabled" style="color:#fff;font-size:12px;cursor:pointer;">Enable Discord Alerts</label>
-                    </div>
-                    <div class="setting-item full-width">
-                        <label class="setting-label">Discord Webhook URL</label>
-                        <input type="text" class="setting-input" id="discord-webhook" placeholder="https://discord.com/api/webhooks/..." style="font-size:11px;">
-                    </div>
-                    <div class="setting-item full-width" style="margin-top:8px;">
-                        <label class="setting-label" style="margin-bottom:6px;display:block;">Alert Types</label>
-                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px;">
-                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                                <input type="checkbox" id="alert-position_opened" checked>
-                                <span>Position Opened</span>
-                            </label>
-                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                                <input type="checkbox" id="alert-position_closed" checked>
-                                <span>Position Closed</span>
-                            </label>
-                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                                <input type="checkbox" id="alert-stop_loss_hit" checked>
-                                <span>Stop Loss Hit</span>
-                            </label>
-                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                                <input type="checkbox" id="alert-take_profit_hit" checked>
-                                <span>Take Profit Hit</span>
-                            </label>
-                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                                <input type="checkbox" id="alert-trailing_stop_hit" checked>
-                                <span>Trailing Stop Hit</span>
-                            </label>
-                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                                <input type="checkbox" id="alert-drawdown_warning" checked>
-                                <span>Drawdown Warning</span>
-                            </label>
-                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                                <input type="checkbox" id="alert-circuit_breaker" checked>
-                                <span>Circuit Breaker</span>
-                            </label>
-                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                                <input type="checkbox" id="alert-critical_error" checked>
-                                <span>Critical Errors</span>
-                            </label>
-                        </div>
-                    </div>
-                </div>
-                <div style="display:flex;gap:8px;margin-top:12px;">
-                    <button class="btn btn-primary" style="flex:1;" onclick="saveAlerts()">Save Alerts</button>
-                    <button class="btn" style="border-color:#00aa55;color:#00aa55;" onclick="testAlert()">Test</button>
-                </div>
-            </div>
-
-            <!-- Indicators Panel -->
-            <div class="panel" style="flex:1;overflow-y:auto;">
-                <div class="panel-header">
-                    <span class="panel-title">AI Indicators</span>
-                </div>
-                <div class="impact-legend">
-                    <span><span class="indicator-impact high">H</span> High</span>
-                    <span><span class="indicator-impact medium">M</span> Medium</span>
-                    <span><span class="indicator-impact low">L</span> Low</span>
-                </div>
-                <div class="indicators-grid" id="indicators-container">
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-rsi" onchange="toggleIndicator('rsi', this.checked)">
-                        <span class="indicator-impact high">H</span>
-                        <span class="indicator-name">RSI (14)</span>
-                        <span class="indicator-desc">Momentum 0-100. Above 70 = overbought, below 30 = oversold</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-sma_200" onchange="toggleIndicator('sma_200', this.checked)">
-                        <span class="indicator-impact high">H</span>
-                        <span class="indicator-name">SMA 200</span>
-                        <span class="indicator-desc">Long-term trend. Price above = bullish, below = bearish</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-macd" onchange="toggleIndicator('macd', this.checked)">
-                        <span class="indicator-impact high">H</span>
-                        <span class="indicator-name">MACD</span>
-                        <span class="indicator-desc">Trend momentum & reversals. Signal line crossovers</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-bollinger" onchange="toggleIndicator('bollinger', this.checked)">
-                        <span class="indicator-impact high">H</span>
-                        <span class="indicator-name">Bollinger Bands</span>
-                        <span class="indicator-desc">Volatility bands. Price at upper = overbought, lower = oversold</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-volume" onchange="toggleIndicator('volume', this.checked)">
-                        <span class="indicator-impact high">H</span>
-                        <span class="indicator-name">Volume</span>
-                        <span class="indicator-desc">Confirms price moves. High volume = strong signal validity</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-golden_cross" onchange="toggleIndicator('golden_cross', this.checked)">
-                        <span class="indicator-impact high">H</span>
-                        <span class="indicator-name">Golden Cross</span>
-                        <span class="indicator-desc">MA20 crosses MA200. Golden = buy, Death Cross = sell</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-sma_20" onchange="toggleIndicator('sma_20', this.checked)">
-                        <span class="indicator-impact medium">M</span>
-                        <span class="indicator-name">SMA 20</span>
-                        <span class="indicator-desc">Short-term trend direction. Dynamic support/resistance</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-sma_50" onchange="toggleIndicator('sma_50', this.checked)">
-                        <span class="indicator-impact medium">M</span>
-                        <span class="indicator-name">SMA 50</span>
-                        <span class="indicator-desc">Medium-term trend. Institutional traders watch this level</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-atr" onchange="toggleIndicator('atr', this.checked)">
-                        <span class="indicator-impact medium">M</span>
-                        <span class="indicator-name">ATR (14)</span>
-                        <span class="indicator-desc">Average True Range. Used for stop-loss & position sizing</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-adx" onchange="toggleIndicator('adx', this.checked)">
-                        <span class="indicator-impact medium">M</span>
-                        <span class="indicator-name">ADX</span>
-                        <span class="indicator-desc">Trend strength 0-100. Above 25 = trending, below = ranging</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-fibonacci" onchange="toggleIndicator('fibonacci', this.checked)">
-                        <span class="indicator-impact medium">M</span>
-                        <span class="indicator-name">Fibonacci</span>
-                        <span class="indicator-desc">Key levels: 23.6%, 38.2%, 50%, 61.8%. Support & resistance</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-stochastic" onchange="toggleIndicator('stochastic', this.checked)">
-                        <span class="indicator-impact low">L</span>
-                        <span class="indicator-name">Stochastic</span>
-                        <span class="indicator-desc">Similar to RSI. Above 80 = overbought, below 20 = oversold</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-cci" onchange="toggleIndicator('cci', this.checked)">
-                        <span class="indicator-impact low">L</span>
-                        <span class="indicator-name">CCI</span>
-                        <span class="indicator-desc">Commodity Channel Index. Identifies cyclical price patterns</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-williams_r" onchange="toggleIndicator('williams_r', this.checked)">
-                        <span class="indicator-impact low">L</span>
-                        <span class="indicator-name">Williams %R</span>
-                        <span class="indicator-desc">Momentum oscillator. -20 to 0 = overbought, -100 to -80 = oversold</span>
-                    </label>
-                    <label class="indicator-item">
-                        <input type="checkbox" id="ind-obv" onchange="toggleIndicator('obv', this.checked)">
-                        <span class="indicator-impact low">L</span>
-                        <span class="indicator-name">OBV</span>
-                        <span class="indicator-desc">On-Balance Volume. Rising OBV = accumulation, falling = distribution</span>
-                    </label>
-                </div>
-            </div>
-        </aside>
+        </footer>
     </div>
 
     <!-- Modal -->
@@ -565,16 +1616,35 @@
         </div>
     </div>
 
-    <!-- Command Status -->
-    <div class="command-status" id="command-status"></div>
+    <!-- Toast -->
+    <div class="toast" id="command-status"></div>
 
     <script src="/static/dashboard.js"></script>
+    <script>
+        // Collapsible panels
+        function toggleCollapsible(header) {
+            header.classList.toggle('open');
+            const content = header.nextElementSibling;
+            content.classList.toggle('open');
+        }
 
-    <!-- Price Ticker Bar -->
-    <div class="price-ticker">
-        <div id="price-ticker-items" style="display:flex;gap:32px;">
-            <div class="ticker-item"><span class="ticker-symbol">Loading prices...</span></div>
-        </div>
-    </div>
+        // Theme toggle
+        function toggleTheme() {
+            const html = document.documentElement;
+            const theme = html.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+            html.setAttribute('data-theme', theme);
+            localStorage.setItem('theme', theme);
+            document.getElementById('theme-icon').textContent = theme === 'light' ? '☀' : '☾';
+        }
+
+        // Load saved theme
+        (function() {
+            const savedTheme = localStorage.getItem('theme') || 'dark';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+            document.addEventListener('DOMContentLoaded', () => {
+                document.getElementById('theme-icon').textContent = savedTheme === 'light' ? '☀' : '☾';
+            });
+        })();
+    </script>
 </body>
 </html>
