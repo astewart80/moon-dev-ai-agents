@@ -36,18 +36,90 @@ load_dotenv()
 import warnings
 warnings.filterwarnings('ignore')
 
+# For file locking
+import fcntl
+import logging
+from pathlib import Path
+
+# ============================================================================
+# PERSISTENT LOGGING - Log to file for debugging
+# ============================================================================
+LOG_DIR = Path(__file__).parent / "data" / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "hyperliquid.log"
+
+# Setup file logger
+_file_logger = logging.getLogger("hyperliquid")
+_file_logger.setLevel(logging.INFO)
+if not _file_logger.handlers:
+    _fh = logging.FileHandler(LOG_FILE)
+    _fh.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s'))
+    _file_logger.addHandler(_fh)
+
+def log_trade(message, level="info"):
+    """Log to both console and file"""
+    getattr(_file_logger, level)(message)
+
+# ============================================================================
+# POSITION LOCK - Prevents race conditions between multiple processes
+# ============================================================================
+LOCK_FILE = "/tmp/trading_bot_position.lock"
+_active_lock = None
+
+def acquire_position_lock(timeout=30):
+    """Acquire exclusive lock before modifying positions. Returns lock file handle."""
+    global _active_lock
+    try:
+        _active_lock = open(LOCK_FILE, 'w')
+        fcntl.flock(_active_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        log_trade("Position lock acquired")
+        return _active_lock
+    except BlockingIOError:
+        cprint("⚠️ Another process is trading - waiting for lock...", "yellow")
+        _active_lock = open(LOCK_FILE, 'w')
+        fcntl.flock(_active_lock, fcntl.LOCK_EX)  # Blocking wait
+        log_trade("Position lock acquired after wait")
+        return _active_lock
+
+def release_position_lock():
+    """Release the position lock"""
+    global _active_lock
+    if _active_lock:
+        try:
+            fcntl.flock(_active_lock, fcntl.LOCK_UN)
+            _active_lock.close()
+            _active_lock = None
+            log_trade("Position lock released")
+        except:
+            pass
+
 # ============================================================================
 # CONNECTION POOLING & CACHING - Reuse connections for SPEED
 # ============================================================================
 _cached_info = None
 _cached_exchange = {}  # keyed by account address
 _cached_decimals = {}  # Cache symbol decimals to avoid repeated API calls
+_cached_ohlcv = {}     # Cache OHLCV data: {(symbol, timeframe): (timestamp, data)}
+OHLCV_CACHE_SECONDS = 60  # Cache OHLCV for 1 minute
+_last_connection_check = 0
+CONNECTION_CHECK_INTERVAL = 300  # Check connection health every 5 minutes
 
 def get_cached_info():
     """Get cached Info object (creates once, reuses for all calls)"""
-    global _cached_info
+    global _cached_info, _last_connection_check
+
+    # Check connection health periodically
+    now = time.time()
+    if _cached_info and (now - _last_connection_check) > CONNECTION_CHECK_INTERVAL:
+        if not check_connection_health():
+            cprint("⚠️ Connection stale, reconnecting...", "yellow")
+            log_trade("Connection health check failed, reconnecting", "warning")
+            reset_connections()
+
     if _cached_info is None:
         _cached_info = Info(constants.MAINNET_API_URL, skip_ws=True)
+        _last_connection_check = now
+        log_trade("New HyperLiquid Info connection created")
     return _cached_info
 
 def get_cached_exchange(account):
@@ -56,13 +128,40 @@ def get_cached_exchange(account):
     addr = account.address
     if addr not in _cached_exchange:
         _cached_exchange[addr] = Exchange(account, constants.MAINNET_API_URL)
+        log_trade(f"New HyperLiquid Exchange connection created for {addr[:10]}...")
     return _cached_exchange[addr]
 
 def reset_connections():
     """Reset all cached connections (call if connections go stale)"""
-    global _cached_info, _cached_exchange
+    global _cached_info, _cached_exchange, _last_connection_check
     _cached_info = None
     _cached_exchange = {}
+    _last_connection_check = 0
+    log_trade("All connections reset")
+
+def check_connection_health():
+    """Check if connection is healthy by making a lightweight API call"""
+    global _cached_info, _last_connection_check
+    try:
+        if _cached_info:
+            # Simple health check - get all mids (fast endpoint)
+            _cached_info.all_mids()
+            _last_connection_check = time.time()
+            return True
+    except Exception as e:
+        log_trade(f"Connection health check failed: {e}", "error")
+        return False
+    return False
+
+def ensure_connection():
+    """Ensure connection is healthy, reconnect if needed. Call before critical operations."""
+    global _cached_info
+    if not check_connection_health():
+        cprint("🔄 Reconnecting to HyperLiquid...", "yellow")
+        reset_connections()
+        _cached_info = Info(constants.MAINNET_API_URL, skip_ws=True)
+        log_trade("Reconnected to HyperLiquid after health check failure")
+    return get_cached_info()
 
 # ============================================================================
 # CONFIGURATION
@@ -599,6 +698,149 @@ def get_all_positions(account):
     return positions
 
 
+# ============================================================================
+# POSITION VALIDATION - Verify trades executed correctly
+# ============================================================================
+
+def verify_position_opened(symbol, expected_size, account, tolerance=0.1):
+    """
+    Verify a position was actually opened after an entry order.
+    Returns (success, actual_position_data) tuple.
+
+    Args:
+        symbol: Token symbol
+        expected_size: Expected position size (positive for long, negative for short)
+        account: HyperLiquid account
+        tolerance: Allow 10% size difference (slippage, partial fills)
+    """
+    time.sleep(0.5)  # Brief delay for position to settle
+
+    info = get_cached_info()
+    user_state = info.user_state(account.address)
+
+    for pos in user_state["assetPositions"]:
+        if pos["position"]["coin"] == symbol:
+            actual_size = float(pos["position"]["szi"])
+            if actual_size == 0:
+                continue
+
+            # Check if size is within tolerance
+            size_diff = abs(abs(actual_size) - abs(expected_size)) / abs(expected_size)
+            if size_diff <= tolerance:
+                log_trade(f"Position verified: {symbol} size={actual_size} (expected {expected_size})")
+                return True, {
+                    'symbol': symbol,
+                    'size': actual_size,
+                    'entry_price': float(pos["position"]["entryPx"]),
+                    'is_long': actual_size > 0
+                }
+            else:
+                log_trade(f"Position size mismatch: {symbol} actual={actual_size} expected={expected_size}", "warning")
+                return False, {'actual_size': actual_size, 'expected_size': expected_size}
+
+    log_trade(f"Position NOT found after entry: {symbol}", "error")
+    return False, None
+
+
+def verify_tpsl_placed(symbol, account):
+    """
+    Verify TP/SL orders were placed for a position.
+    Returns (has_tp, has_sl, orders) tuple.
+    """
+    info = get_cached_info()
+    open_orders = info.open_orders(account.address)
+
+    tp_order = None
+    sl_order = None
+
+    for order in open_orders:
+        if order.get('coin') == symbol:
+            # Check if it's a trigger order (TP or SL)
+            if order.get('orderType') == 'trigger':
+                trigger_info = order.get('trigger', {})
+                if trigger_info.get('tpsl') == 'tp':
+                    tp_order = order
+                elif trigger_info.get('tpsl') == 'sl':
+                    sl_order = order
+
+    has_tp = tp_order is not None
+    has_sl = sl_order is not None
+
+    if has_tp and has_sl:
+        log_trade(f"TP/SL verified for {symbol}: TP @ {tp_order.get('triggerPx')}, SL @ {sl_order.get('triggerPx')}")
+    else:
+        missing = []
+        if not has_tp:
+            missing.append("TP")
+        if not has_sl:
+            missing.append("SL")
+        log_trade(f"Missing {', '.join(missing)} orders for {symbol}", "warning")
+
+    return has_tp, has_sl, {'tp': tp_order, 'sl': sl_order}
+
+
+def get_total_exposure(account):
+    """
+    Calculate total position exposure in USD.
+    Returns (total_long_exposure, total_short_exposure, total_exposure).
+    """
+    positions = get_all_positions(account)
+
+    total_long = 0
+    total_short = 0
+
+    for pos in positions:
+        price = get_current_price(pos['symbol'])
+        notional = abs(pos['size']) * price
+
+        if pos['is_long']:
+            total_long += notional
+        else:
+            total_short += notional
+
+    return total_long, total_short, total_long + total_short
+
+
+def check_max_exposure(account, new_position_usd, max_exposure_pct=80):
+    """
+    Check if opening a new position would exceed max exposure limit.
+
+    Args:
+        account: HyperLiquid account
+        new_position_usd: Size of new position in USD
+        max_exposure_pct: Maximum total exposure as % of account value (default 80%)
+
+    Returns:
+        (allowed, current_exposure_pct, message)
+    """
+    info = get_cached_info()
+    user_state = info.user_state(account.address)
+    account_value = float(user_state["marginSummary"]["accountValue"])
+
+    if account_value <= 0:
+        return False, 0, "Account value is zero or negative"
+
+    _, _, current_exposure = get_total_exposure(account)
+    new_total_exposure = current_exposure + new_position_usd
+    exposure_pct = (new_total_exposure / account_value) * 100
+
+    if exposure_pct > max_exposure_pct:
+        msg = f"Exposure would be {exposure_pct:.1f}% (max {max_exposure_pct}%)"
+        log_trade(f"Max exposure check FAILED: {msg}", "warning")
+        cprint(f"⚠️ {msg}", "yellow")
+        return False, exposure_pct, msg
+
+    log_trade(f"Exposure check passed: {exposure_pct:.1f}% after ${new_position_usd:.2f} position")
+    return True, exposure_pct, "OK"
+
+
+def get_account_equity(account):
+    """Get account equity (total value including unrealized P&L)"""
+    info = get_cached_info()
+    user_state = info.user_state(account.address)
+    return float(user_state["marginSummary"]["accountValue"])
+
+
 def close_all_positions(account):
     """ULTRA FAST close all positions - single API call per position using market_close()"""
     print(colored('🔪 CLOSING ALL POSITIONS', 'red', attrs=['bold']))
@@ -1076,20 +1318,38 @@ def add_technical_indicators(df):
         traceback.print_exc()
         return df
 
-def get_data(symbol, timeframe='15m', bars=100, add_indicators=True):
+def get_data(symbol, timeframe='15m', bars=100, add_indicators=True, use_cache=True):
     """
-    🌙 Moon Dev's Hyperliquid Data Fetcher
+    🌙 Moon Dev's Hyperliquid Data Fetcher (with caching)
 
     Args:
         symbol (str): Trading pair symbol (e.g., 'BTC', 'ETH')
         timeframe (str): Candle timeframe (default: '15m')
         bars (int): Number of bars to fetch (default: 100, max: 5000)
         add_indicators (bool): Whether to add technical indicators
+        use_cache (bool): Use cached data if fresh (default: True)
 
     Returns:
         pd.DataFrame: OHLCV data with columns [timestamp, open, high, low, close, volume]
                      and technical indicators if requested
     """
+    global _cached_ohlcv
+
+    cache_key = (symbol, timeframe, bars, add_indicators)
+    current_time = time.time()
+
+    # Check cache first
+    if use_cache and cache_key in _cached_ohlcv:
+        cached_time, cached_df = _cached_ohlcv[cache_key]
+        cache_age = current_time - cached_time
+
+        if cache_age < OHLCV_CACHE_SECONDS:
+            print(f"📦 Using cached OHLCV data for {symbol} {timeframe} (age: {cache_age:.1f}s)")
+            log_trade(f"OHLCV cache hit: {symbol} {timeframe} (age: {cache_age:.1f}s)")
+            return cached_df.copy()  # Return copy to prevent modification
+        else:
+            print(f"🔄 Cache expired for {symbol} {timeframe} (age: {cache_age:.1f}s > {OHLCV_CACHE_SECONDS}s)")
+
     print("\n🌙 Moon Dev's Hyperliquid Data Fetcher")
     print(f"🎯 Symbol: {symbol}")
     print(f"⏰ Timeframe: {timeframe}")
@@ -1127,6 +1387,16 @@ def get_data(symbol, timeframe='15m', bars=100, add_indicators=True):
         print(f"📈 Total candles: {len(df)}")
         print(f"📅 Range: {df['timestamp'].min()} to {df['timestamp'].max()}")
         print("✨ Thanks for using Moon Dev's Data Fetcher! ✨")
+
+        # Cache the result
+        if use_cache:
+            _cached_ohlcv[cache_key] = (current_time, df.copy())
+            log_trade(f"OHLCV cached: {symbol} {timeframe} ({len(df)} bars)")
+
+            # Cleanup old cache entries (keep only last 20)
+            if len(_cached_ohlcv) > 20:
+                oldest_key = min(_cached_ohlcv.keys(), key=lambda k: _cached_ohlcv[k][0])
+                del _cached_ohlcv[oldest_key]
 
     return df
 
@@ -1576,6 +1846,440 @@ def open_short(token, amount, slippage=None, leverage=DEFAULT_LEVERAGE, account=
         print(colored(f'❌ Error opening short: {e}', 'red'))
         traceback.print_exc()
         return None
+
+# ============================================================================
+# SIGNAL STRENGTH WEIGHTING - Pre-trade signal validation
+# ============================================================================
+
+def calculate_signal_strength(df, direction='BUY'):
+    """
+    Calculate a weighted signal strength score from technical indicators.
+
+    Args:
+        df: DataFrame with technical indicators (from get_data with add_indicators=True)
+        direction: 'BUY' or 'SELL' - the intended trade direction
+
+    Returns:
+        dict: {
+            'score': 0-100 weighted score,
+            'signals': list of contributing signals,
+            'conflicts': list of conflicting signals,
+            'recommendation': 'STRONG', 'MODERATE', 'WEAK', or 'AVOID'
+        }
+    """
+    if df.empty or len(df) < 2:
+        return {'score': 0, 'signals': [], 'conflicts': [], 'recommendation': 'AVOID'}
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    signals = []
+    conflicts = []
+    score = 50  # Start neutral
+
+    is_buy = direction.upper() == 'BUY'
+
+    # ============================================================
+    # TIER 1: High-weight indicators (±15 points each)
+    # ============================================================
+
+    # RSI Divergence (most powerful signal)
+    rsi_div = latest.get('rsi_divergence', 'NONE')
+    if rsi_div == 'BULLISH' and is_buy:
+        score += 15
+        signals.append(f"RSI BULLISH divergence (+15)")
+    elif rsi_div == 'BEARISH' and not is_buy:
+        score += 15
+        signals.append(f"RSI BEARISH divergence (+15)")
+    elif rsi_div == 'BULLISH' and not is_buy:
+        score -= 10
+        conflicts.append(f"RSI BULLISH divergence conflicts with SELL (-10)")
+    elif rsi_div == 'BEARISH' and is_buy:
+        score -= 10
+        conflicts.append(f"RSI BEARISH divergence conflicts with BUY (-10)")
+
+    # OBV Divergence (smart money tracking)
+    obv_div = latest.get('obv_divergence', 'NONE')
+    if obv_div == 'BULLISH' and is_buy:
+        score += 12
+        signals.append(f"OBV BULLISH (accumulation) (+12)")
+    elif obv_div == 'BEARISH' and not is_buy:
+        score += 12
+        signals.append(f"OBV BEARISH (distribution) (+12)")
+    elif obv_div == 'BULLISH' and not is_buy:
+        score -= 8
+        conflicts.append(f"OBV shows accumulation, conflicts with SELL (-8)")
+    elif obv_div == 'BEARISH' and is_buy:
+        score -= 8
+        conflicts.append(f"OBV shows distribution, conflicts with BUY (-8)")
+
+    # Market Regime
+    regime = latest.get('market_regime', 'UNKNOWN')
+    if regime == 'TRENDING_UP' and is_buy:
+        score += 12
+        signals.append(f"Market TRENDING UP (+12)")
+    elif regime == 'TRENDING_DOWN' and not is_buy:
+        score += 12
+        signals.append(f"Market TRENDING DOWN (+12)")
+    elif regime == 'RANGING':
+        score -= 5
+        conflicts.append(f"Market RANGING - low conviction (-5)")
+    elif regime == 'BREAKOUT':
+        score += 8
+        signals.append(f"BREAKOUT detected (+8)")
+
+    # ============================================================
+    # TIER 2: Medium-weight indicators (±8 points each)
+    # ============================================================
+
+    # RSI levels
+    rsi = latest.get('rsi', 50)
+    if not pd.isna(rsi):
+        if is_buy and rsi < 30:
+            score += 10
+            signals.append(f"RSI oversold ({rsi:.1f}) (+10)")
+        elif is_buy and rsi > 70:
+            score -= 8
+            conflicts.append(f"RSI overbought ({rsi:.1f}) - poor BUY timing (-8)")
+        elif not is_buy and rsi > 70:
+            score += 10
+            signals.append(f"RSI overbought ({rsi:.1f}) (+10)")
+        elif not is_buy and rsi < 30:
+            score -= 8
+            conflicts.append(f"RSI oversold ({rsi:.1f}) - poor SELL timing (-8)")
+
+    # MACD alignment
+    macd = latest.get('MACD_12_26_9', 0)
+    macd_signal = latest.get('MACDs_12_26_9', 0)
+    macd_hist = latest.get('MACDh_12_26_9', 0)
+    prev_macd_hist = prev.get('MACDh_12_26_9', 0)
+
+    if not pd.isna(macd) and not pd.isna(macd_signal):
+        # MACD crossover
+        if is_buy and macd > macd_signal and prev.get('MACD_12_26_9', 0) <= prev.get('MACDs_12_26_9', 0):
+            score += 10
+            signals.append(f"MACD bullish crossover (+10)")
+        elif not is_buy and macd < macd_signal and prev.get('MACD_12_26_9', 0) >= prev.get('MACDs_12_26_9', 0):
+            score += 10
+            signals.append(f"MACD bearish crossover (+10)")
+
+        # MACD histogram momentum
+        if not pd.isna(macd_hist) and not pd.isna(prev_macd_hist):
+            if is_buy and macd_hist > prev_macd_hist and macd_hist > 0:
+                score += 5
+                signals.append(f"MACD histogram increasing (+5)")
+            elif not is_buy and macd_hist < prev_macd_hist and macd_hist < 0:
+                score += 5
+                signals.append(f"MACD histogram decreasing (+5)")
+
+    # ADX trend strength
+    adx = latest.get('ADX_14', 20)
+    if not pd.isna(adx):
+        if adx > 30:
+            score += 8
+            signals.append(f"Strong trend ADX={adx:.0f} (+8)")
+        elif adx < 20:
+            score -= 5
+            conflicts.append(f"Weak trend ADX={adx:.0f} (-5)")
+
+    # ============================================================
+    # TIER 3: Supporting indicators (±5 points each)
+    # ============================================================
+
+    # SMA alignment
+    price = latest.get('close', 0)
+    sma_20 = latest.get('sma_20', price)
+    sma_50 = latest.get('sma_50', price)
+
+    if not pd.isna(sma_20) and not pd.isna(sma_50):
+        if is_buy and price > sma_20 > sma_50:
+            score += 5
+            signals.append(f"Price above aligned SMAs (+5)")
+        elif not is_buy and price < sma_20 < sma_50:
+            score += 5
+            signals.append(f"Price below aligned SMAs (+5)")
+        elif is_buy and price < sma_50:
+            score -= 3
+            conflicts.append(f"Price below SMA50 (-3)")
+        elif not is_buy and price > sma_50:
+            score -= 3
+            conflicts.append(f"Price above SMA50 (-3)")
+
+    # Volume confirmation
+    vol_ratio = latest.get('volume_ratio', 1)
+    if not pd.isna(vol_ratio):
+        if vol_ratio > 1.5:
+            score += 5
+            signals.append(f"High volume ratio {vol_ratio:.1f}x (+5)")
+        elif vol_ratio < 0.5:
+            score -= 3
+            conflicts.append(f"Low volume {vol_ratio:.1f}x (-3)")
+
+    # Support/Resistance proximity
+    dist_to_support = latest.get('distance_to_support_pct')
+    dist_to_resistance = latest.get('distance_to_resistance_pct')
+
+    if is_buy and dist_to_support is not None and not pd.isna(dist_to_support):
+        if dist_to_support < 2:  # Near support
+            score += 5
+            signals.append(f"Near support ({dist_to_support:.1f}% away) (+5)")
+    if not is_buy and dist_to_resistance is not None and not pd.isna(dist_to_resistance):
+        if dist_to_resistance < 2:  # Near resistance
+            score += 5
+            signals.append(f"Near resistance ({dist_to_resistance:.1f}% away) (+5)")
+
+    # Cap score to 0-100 range
+    score = max(0, min(100, score))
+
+    # Determine recommendation
+    if score >= 75:
+        recommendation = 'STRONG'
+    elif score >= 60:
+        recommendation = 'MODERATE'
+    elif score >= 45:
+        recommendation = 'WEAK'
+    else:
+        recommendation = 'AVOID'
+
+    result = {
+        'score': score,
+        'signals': signals,
+        'conflicts': conflicts,
+        'recommendation': recommendation,
+        'direction': direction
+    }
+
+    log_trade(f"Signal strength for {direction}: {score} ({recommendation}) - {len(signals)} supporting, {len(conflicts)} conflicting")
+
+    return result
+
+
+def validate_trade_signal(symbol, direction, account=None, min_score=60):
+    """
+    Validate a trade signal before execution.
+
+    Args:
+        symbol: Token symbol (e.g., 'BTC')
+        direction: 'BUY' or 'SELL'
+        account: HyperLiquid account (optional, for exposure check)
+        min_score: Minimum signal strength score required (default 60)
+
+    Returns:
+        (bool, dict): (is_valid, signal_analysis)
+    """
+    cprint(f"\n🔍 Validating {direction} signal for {symbol}...", "cyan")
+
+    # Get market data with indicators
+    df = get_data(symbol, timeframe='1h', bars=100, add_indicators=True)
+
+    if df.empty:
+        cprint(f"❌ No market data available for {symbol}", "red")
+        return False, {'error': 'No market data'}
+
+    # Calculate signal strength
+    analysis = calculate_signal_strength(df, direction)
+
+    # Print analysis
+    cprint(f"\n📊 Signal Strength Analysis for {symbol} {direction}:", "yellow", attrs=['bold'])
+    cprint(f"   Score: {analysis['score']}/100 ({analysis['recommendation']})",
+           "green" if analysis['score'] >= min_score else "red", attrs=['bold'])
+
+    if analysis['signals']:
+        cprint(f"   ✅ Supporting signals:", "green")
+        for sig in analysis['signals'][:5]:  # Show top 5
+            cprint(f"      • {sig}", "green")
+
+    if analysis['conflicts']:
+        cprint(f"   ⚠️ Conflicting signals:", "yellow")
+        for conf in analysis['conflicts'][:3]:  # Show top 3
+            cprint(f"      • {conf}", "yellow")
+
+    is_valid = analysis['score'] >= min_score
+
+    if is_valid:
+        cprint(f"   ✅ Signal VALIDATED (score {analysis['score']} >= {min_score})", "green", attrs=['bold'])
+    else:
+        cprint(f"   ❌ Signal REJECTED (score {analysis['score']} < {min_score})", "red", attrs=['bold'])
+
+    return is_valid, analysis
+
+
+# ============================================================================
+# DATA FRESHNESS CHECK - Ensure data is recent enough for trading
+# ============================================================================
+
+# Default max age in minutes per timeframe
+DATA_FRESHNESS_LIMITS = {
+    '1m': 5,      # 1-minute data should be < 5 minutes old
+    '5m': 15,     # 5-minute data should be < 15 minutes old
+    '15m': 45,    # 15-minute data should be < 45 minutes old
+    '1h': 120,    # 1-hour data should be < 2 hours old
+    '4h': 480,    # 4-hour data should be < 8 hours old
+    '1d': 1440,   # Daily data should be < 24 hours old
+}
+
+
+def check_data_freshness(df, timeframe='15m', max_age_minutes=None):
+    """
+    Check if OHLCV data is fresh enough for trading decisions.
+
+    Args:
+        df: DataFrame with 'timestamp' column
+        timeframe: Timeframe of the data (for auto max_age)
+        max_age_minutes: Maximum allowed age in minutes (overrides auto)
+
+    Returns:
+        dict: {
+            'is_fresh': bool,
+            'latest_timestamp': datetime,
+            'age_minutes': float,
+            'max_age_minutes': float,
+            'message': str
+        }
+    """
+    if df.empty:
+        return {
+            'is_fresh': False,
+            'latest_timestamp': None,
+            'age_minutes': float('inf'),
+            'max_age_minutes': 0,
+            'message': 'No data available'
+        }
+
+    # Get the latest timestamp from data
+    latest_ts = df['timestamp'].max()
+
+    # Handle various timestamp formats
+    if isinstance(latest_ts, str):
+        latest_ts = pd.to_datetime(latest_ts)
+    elif isinstance(latest_ts, (int, float)):
+        # Assume milliseconds if large number
+        if latest_ts > 1e12:
+            latest_ts = datetime.datetime.utcfromtimestamp(latest_ts / 1000)
+        else:
+            latest_ts = datetime.datetime.utcfromtimestamp(latest_ts)
+
+    # Calculate age
+    now = datetime.datetime.utcnow()
+
+    # Handle timezone-aware timestamps
+    if hasattr(latest_ts, 'tzinfo') and latest_ts.tzinfo is not None:
+        latest_ts = latest_ts.replace(tzinfo=None)
+
+    age = now - latest_ts
+    age_minutes = age.total_seconds() / 60
+
+    # Determine max allowed age
+    if max_age_minutes is None:
+        max_age_minutes = DATA_FRESHNESS_LIMITS.get(timeframe.lower(), 60)
+
+    is_fresh = age_minutes <= max_age_minutes
+
+    result = {
+        'is_fresh': is_fresh,
+        'latest_timestamp': latest_ts,
+        'age_minutes': round(age_minutes, 1),
+        'max_age_minutes': max_age_minutes,
+        'message': ''
+    }
+
+    if is_fresh:
+        result['message'] = f"Data is fresh ({age_minutes:.1f}m old, limit: {max_age_minutes}m)"
+        log_trade(f"Data freshness OK: {age_minutes:.1f}m old")
+    else:
+        result['message'] = f"⚠️ STALE DATA: {age_minutes:.1f}m old (limit: {max_age_minutes}m)"
+        log_trade(f"STALE DATA WARNING: {age_minutes:.1f}m old, limit {max_age_minutes}m", "warning")
+        cprint(f"⚠️ STALE DATA WARNING: Data is {age_minutes:.1f} minutes old (limit: {max_age_minutes}m)", "yellow", attrs=['bold'])
+
+    return result
+
+
+def validate_data_for_trading(symbol, timeframe='15m', required_bars=50):
+    """
+    Comprehensive data validation before trading.
+
+    Args:
+        symbol: Token symbol
+        timeframe: Timeframe to validate
+        required_bars: Minimum number of bars required
+
+    Returns:
+        (bool, dict): (is_valid, validation_details)
+    """
+    cprint(f"\n🔍 Validating data quality for {symbol} ({timeframe})...", "cyan")
+
+    # Fetch fresh data (bypass cache for validation)
+    df = get_data(symbol, timeframe=timeframe, bars=required_bars + 50, add_indicators=True, use_cache=False)
+
+    validation = {
+        'is_valid': True,
+        'errors': [],
+        'warnings': [],
+        'data_points': len(df) if not df.empty else 0,
+        'freshness': None
+    }
+
+    # Check 1: Data availability
+    if df.empty:
+        validation['is_valid'] = False
+        validation['errors'].append(f"No data available for {symbol}")
+        return False, validation
+
+    # Check 2: Sufficient bars
+    if len(df) < required_bars:
+        validation['is_valid'] = False
+        validation['errors'].append(f"Insufficient data: {len(df)} bars (need {required_bars})")
+
+    # Check 3: Data freshness
+    freshness = check_data_freshness(df, timeframe)
+    validation['freshness'] = freshness
+
+    if not freshness['is_fresh']:
+        validation['is_valid'] = False
+        validation['errors'].append(freshness['message'])
+
+    # Check 4: Data gaps (missing candles)
+    if len(df) >= 2:
+        timestamps = pd.to_datetime(df['timestamp'])
+        time_diffs = timestamps.diff().dropna()
+
+        # Expected interval based on timeframe
+        tf_minutes = {
+            '1m': 1, '5m': 5, '15m': 15, '30m': 30,
+            '1h': 60, '4h': 240, '1d': 1440
+        }
+        expected_interval = tf_minutes.get(timeframe.lower(), 15)
+        expected_td = pd.Timedelta(minutes=expected_interval)
+
+        # Count gaps (intervals > 1.5x expected)
+        gaps = time_diffs[time_diffs > expected_td * 1.5]
+        if len(gaps) > 0:
+            validation['warnings'].append(f"Found {len(gaps)} data gap(s) in history")
+            log_trade(f"Data gaps detected: {len(gaps)} gaps for {symbol} {timeframe}", "warning")
+
+    # Check 5: NaN values in critical columns
+    critical_cols = ['close', 'high', 'low', 'volume']
+    for col in critical_cols:
+        if col in df.columns:
+            nan_count = df[col].isna().sum()
+            if nan_count > 0:
+                validation['warnings'].append(f"{nan_count} NaN values in '{col}' column")
+
+    # Print results
+    if validation['is_valid']:
+        cprint(f"✅ Data validation PASSED for {symbol}", "green", attrs=['bold'])
+        cprint(f"   📊 {validation['data_points']} bars | Fresh: {freshness['age_minutes']:.1f}m old", "green")
+    else:
+        cprint(f"❌ Data validation FAILED for {symbol}", "red", attrs=['bold'])
+        for err in validation['errors']:
+            cprint(f"   ❌ {err}", "red")
+
+    if validation['warnings']:
+        for warn in validation['warnings']:
+            cprint(f"   ⚠️ {warn}", "yellow")
+
+    return validation['is_valid'], validation
+
 
 # Initialize on import
 print("✨ HyperLiquid trading functions loaded successfully!")

@@ -1399,6 +1399,99 @@ def clear_fills_for_symbol(symbol):
     except:
         pass
 
+@app.post("/api/manual-trade")
+async def manual_trade(request: Request):
+    """Execute a manual trade with custom amount and leverage"""
+    import time
+    import traceback
+    from pydantic import BaseModel
+
+    try:
+        body = await request.json()
+        symbol = body.get('symbol', 'BTC').upper()
+        amount = float(body.get('amount', 50))
+        leverage = int(body.get('leverage', 3))
+        direction = body.get('direction', 'LONG').upper()
+        tp_pct = float(body.get('tp_pct', 10.0))
+        sl_pct = float(body.get('sl_pct', 3.0))
+    except Exception as e:
+        return {"success": False, "message": f"Invalid request body: {e}"}
+
+    print(f"\n{'='*50}")
+    print(f"⚡ MANUAL TRADE REQUEST")
+    print(f"   Symbol: {symbol}")
+    print(f"   Direction: {direction}")
+    print(f"   Amount: ${amount}")
+    print(f"   Leverage: {leverage}x")
+    print(f"   TP: {tp_pct}% | SL: {sl_pct}%")
+    print(f"   Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    try:
+        if not HYPERLIQUID_AVAILABLE:
+            print("   ❌ HyperLiquid SDK not available")
+            return {"success": False, "message": "HyperLiquid SDK not available"}
+
+        import sys
+        sys.path.insert(0, str(PROJECT_ROOT / "src"))
+        import nice_funcs_hyperliquid as n
+
+        account = n._get_account_from_env()
+        if not account:
+            return {"success": False, "message": "No account configured"}
+        print(f"   ✓ Account: {account.address[:10]}...")
+
+        # Validate amount
+        if amount < 10:
+            return {"success": False, "message": f"Amount ${amount} below $10 minimum"}
+
+        # Check max exposure before trading
+        allowed, exposure_pct, msg = n.check_max_exposure(account, amount)
+        if not allowed:
+            return {"success": False, "message": f"Max exposure exceeded: {msg}"}
+
+        # Set leverage
+        try:
+            n.set_leverage(symbol, leverage, account)
+            print(f"   ✓ Leverage set to {leverage}x")
+        except Exception as e:
+            print(f"   ⚠️ Leverage warning: {e}")
+
+        # Execute trade based on direction
+        if direction == 'LONG':
+            print(f"   → Executing LONG ${amount} {symbol}...")
+            result = n.market_buy(symbol, amount, account, auto_tpsl=True, tp_pct=tp_pct, sl_pct=sl_pct)
+        else:
+            print(f"   → Executing SHORT ${amount} {symbol}...")
+            result = n.open_short(symbol, amount, leverage=leverage, account=account, auto_tpsl=True, tp_pct=tp_pct, sl_pct=sl_pct)
+
+        if result and result.get('status') == 'ok':
+            statuses = result.get('response', {}).get('data', {}).get('statuses', [])
+            if statuses and 'filled' in statuses[0]:
+                fill_data = statuses[0]['filled']
+                fill_qty = float(fill_data.get('totalSz', 0))
+                fill_price = float(fill_data.get('avgPx', 0))
+
+                print(f"   ✅ FILLED: {fill_qty} {symbol} @ ${fill_price}")
+                save_trade_fill(symbol, fill_qty, fill_price, "BUY" if direction == "LONG" else "SELL")
+
+                return {
+                    "success": True,
+                    "message": f"{direction} {symbol} filled",
+                    "filled_qty": fill_qty,
+                    "filled_price": fill_price,
+                    "direction": direction
+                }
+            else:
+                return {"success": False, "message": f"Order not filled: {statuses}"}
+        else:
+            return {"success": False, "message": f"Order failed: {result}"}
+
+    except Exception as e:
+        print(f"   ❌ Error: {e}")
+        traceback.print_exc()
+        return {"success": False, "message": str(e)}
+
+
 @app.post("/api/force-buy/{symbol}")
 async def force_buy(symbol: str):
     """Force buy a symbol with 25% of account - with detailed logging"""
@@ -2306,6 +2399,8 @@ async def fast_trade(request: dict):
 
         # Execute order with tighter slippage for speed
         is_buy = (side == "long")
+        print(f"⚡ FAST TRADE: {side.upper()} {size} {symbol} @ ${price:.4f}")
+
         order_result = exchange.market_open(
             symbol,
             is_buy=is_buy,
@@ -2314,6 +2409,7 @@ async def fast_trade(request: dict):
         )
 
         elapsed = time.time() - start
+        print(f"   Order result: {order_result}")
 
         if order_result and order_result.get('status') == 'ok':
             statuses = order_result.get('response', {}).get('data', {}).get('statuses', [])
@@ -2322,6 +2418,33 @@ async def fast_trade(request: dict):
                 fill_price = float(fill.get('avgPx', price))
                 fill_size = float(fill.get('totalSz', size))
                 side_str = "LONG" if is_buy else "SHORT"
+
+                print(f"   ✅ FILLED: {fill_size} {symbol} @ ${fill_price:.4f}")
+
+                # Auto-set TP/SL orders
+                try:
+                    import sys
+                    sys.path.insert(0, str(PROJECT_ROOT / "src"))
+                    import nice_funcs_hyperliquid as n
+
+                    # Read TP/SL from settings
+                    tp_pct = 10.0
+                    sl_pct = 3.0
+                    try:
+                        with open(TRADING_AGENT_FILE, 'r') as f:
+                            content = f.read()
+                            tp_match = re.search(r'TAKE_PROFIT_PERCENTAGE\s*=\s*([\d.]+)', content)
+                            sl_match = re.search(r'STOP_LOSS_PERCENTAGE\s*=\s*([\d.]+)', content)
+                            if tp_match: tp_pct = float(tp_match.group(1))
+                            if sl_match: sl_pct = float(sl_match.group(1))
+                    except:
+                        pass
+
+                    n.place_tp_sl_orders(symbol, fill_price, fill_size, is_buy, tp_pct, sl_pct, account)
+                    print(f"   ✅ TP/SL set: TP +{tp_pct}%, SL -{sl_pct}%")
+                except Exception as e:
+                    print(f"   ⚠️ TP/SL failed: {e}")
+
                 return {
                     "success": True,
                     "message": f"Opened {side_str} {fill_size} {symbol} @ ${fill_price:.4f} ({elapsed:.1f}s)",
@@ -2329,10 +2452,17 @@ async def fast_trade(request: dict):
                     "fill_size": fill_size,
                     "elapsed": elapsed
                 }
+            else:
+                print(f"   ❌ Not filled: {statuses}")
+                return {"success": False, "message": f"Order not filled: {statuses}", "elapsed": elapsed}
 
+        print(f"   ❌ Order failed: {order_result}")
         return {"success": False, "message": f"Order failed: {order_result}", "elapsed": elapsed}
 
     except Exception as e:
+        import traceback
+        print(f"   ❌ Exception: {e}")
+        traceback.print_exc()
         return {"success": False, "message": str(e)}
 
 
