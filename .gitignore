@@ -167,3 +167,4 @@ src/data/chat_agent/*.mov
 
 # Video Agent - Sora 2 generated videos
 src/data/video_agent/
+src/data/alert_settings.json
